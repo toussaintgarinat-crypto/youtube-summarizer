@@ -31,25 +31,27 @@ def _find_yt_dlp() -> Optional[str]:
 
 
 def _find_node() -> Optional[str]:
-    """Return path to Node.js binary."""
-    import shutil
+    """Return path to Node.js binary (macOS + Linux)."""
+    import shutil, glob
 
     if (path := shutil.which("node")):
         return path
 
     candidates = [
+        # macOS
         "/usr/local/bin/node",
         "/opt/homebrew/bin/node",
-        os.path.expanduser("~/.nvm/versions/node/*/bin/node"),
+        # Linux (Streamlit Cloud / Debian)
+        "/usr/bin/node",
+        "/usr/bin/nodejs",
+        "/usr/local/lib/nodejs/bin/node",
+        # nvm (any version)
+        *glob.glob(os.path.expanduser("~/.nvm/versions/node/*/bin/node")),
+        *glob.glob("/usr/local/nvm/versions/node/*/bin/node"),
     ]
     for path in candidates:
-        if "*" not in path and os.path.isfile(path):
+        if os.path.isfile(path):
             return path
-
-    # nvm glob fallback
-    import glob
-    for path in glob.glob(os.path.expanduser("~/.nvm/versions/node/*/bin/node")):
-        return path
 
     return None
 

@@ -5,4 +5,4 @@ streamlit
 requests
 fpdf2
 openai
-yt-dlp
+yt-dlp>=2026.3.17
