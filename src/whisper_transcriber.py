@@ -16,7 +16,6 @@ def _find_yt_dlp() -> Optional[str]:
     if (path := shutil.which("yt-dlp")):
         return path
 
-    # Common locations when installed via pip --user
     candidates = [
         os.path.expanduser("~/Library/Python/3.9/bin/yt-dlp"),
         os.path.expanduser("~/Library/Python/3.10/bin/yt-dlp"),
@@ -29,6 +28,47 @@ def _find_yt_dlp() -> Optional[str]:
             return path
 
     return None
+
+
+def _find_node() -> Optional[str]:
+    """Return path to Node.js binary."""
+    import shutil
+
+    if (path := shutil.which("node")):
+        return path
+
+    candidates = [
+        "/usr/local/bin/node",
+        "/opt/homebrew/bin/node",
+        os.path.expanduser("~/.nvm/versions/node/*/bin/node"),
+    ]
+    for path in candidates:
+        if "*" not in path and os.path.isfile(path):
+            return path
+
+    # nvm glob fallback
+    import glob
+    for path in glob.glob(os.path.expanduser("~/.nvm/versions/node/*/bin/node")):
+        return path
+
+    return None
+
+
+def _subprocess_env() -> dict:
+    """Build env dict that guarantees /usr/local/bin is in PATH for subprocess calls."""
+    env = os.environ.copy()
+    extra = "/usr/local/bin:/opt/homebrew/bin"
+    if extra not in env.get("PATH", ""):
+        env["PATH"] = extra + ":" + env.get("PATH", "")
+    return env
+
+
+def _js_runtime_flags() -> list:
+    """Return --js-runtimes flag if a JS runtime is available, otherwise empty list."""
+    node = _find_node()
+    if node:
+        return ["--js-runtimes", f"node:{node}"]
+    return []
 
 
 def check_yt_dlp() -> bool:
@@ -53,11 +93,12 @@ def download_audio(url: str, output_dir: str) -> str:
         "--audio-format", "mp3",
         "--audio-quality", "5",
         "--no-playlist",
+        *_js_runtime_flags(),
         "-o", output_template,
-        url
+        url,
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=_subprocess_env())
 
     if result.returncode != 0:
         stderr = result.stderr[-800:] if result.stderr else "Erreur inconnue"
@@ -75,8 +116,8 @@ def get_video_title_ytdlp(url: str) -> str:
     yt_dlp_bin = _find_yt_dlp() or "yt-dlp"
     try:
         result = subprocess.run(
-            [yt_dlp_bin, "--get-title", "--no-playlist", url],
-            capture_output=True, text=True, timeout=30
+            [yt_dlp_bin, "--get-title", "--no-playlist", *_js_runtime_flags(), url],
+            capture_output=True, text=True, timeout=30, env=_subprocess_env(),
         )
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()

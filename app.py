@@ -6,8 +6,19 @@ Supports: YouTube, Twitch, Vimeo (transcript), any platform via Whisper, local a
 import streamlit as st
 import config
 from src import extractor, chunker, analyzer, fusion
+from src.models import fetch_free_models, fetch_all_models
 import time
 from datetime import datetime
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_free_models() -> dict:
+    return fetch_free_models()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_all_models() -> dict:
+    return fetch_all_models()
 
 st.set_page_config(
     page_title="YouTube Summarizer",
@@ -79,7 +90,7 @@ def active_api_key() -> str:
 # Pipeline
 # ──────────────────────────────────────────────────────────────
 
-def run_pipeline(transcript: list, video_title: str, model: str, chunk_size: int, overlap: int) -> str:
+def run_pipeline(transcript: list, video_title: str, model: str, chunk_size: int, overlap: int, output_language: str = "Français") -> str:
     """Chunk → Analyze → Fuse."""
     api_key = active_api_key()
     progress_bar = st.progress(0)
@@ -95,7 +106,7 @@ def run_pipeline(transcript: list, video_title: str, model: str, chunk_size: int
         for i, chunk in enumerate(chunks):
             status_text.text(f"🤖 Analyse chunk {i + 1}/{len(chunks)}...")
             progress_bar.progress(20 + 70 * (i + 1) // len(chunks))
-            analyses.append(analyzer.analyze_chunk(chunk["text"], video_title, model=model, api_key=api_key))
+            analyses.append(analyzer.analyze_chunk(chunk["text"], video_title, model=model, api_key=api_key, output_language=output_language))
             if len(chunks) > 1:
                 time.sleep(1)
 
@@ -103,7 +114,7 @@ def run_pipeline(transcript: list, video_title: str, model: str, chunk_size: int
         if len(analyses) > 1:
             status_text.text("🔗 Fusion des analyses...")
             progress_bar.progress(95)
-            final_analysis = fusion.fusion_analyses(analyses, video_title, model, api_key=api_key)
+            final_analysis = fusion.fusion_analyses(analyses, video_title, model, api_key=api_key, output_language=output_language)
 
         progress_bar.progress(100)
         status_text.text("✅ Terminé !")
@@ -118,6 +129,7 @@ def run_pipeline(transcript: list, video_title: str, model: str, chunk_size: int
 def process_url(
     url: str, model: str, chunk_size: int, overlap: int,
     force_whisper: bool, whisper_lang: str, whisper_model: str,
+    output_language: str = "Français",
 ) -> tuple[str, str]:
     """Fetch transcript (or Whisper fallback) then run pipeline."""
     progress_bar = st.progress(0)
@@ -157,13 +169,13 @@ def process_url(
     progress_bar.progress(30)
     time.sleep(0.4)
 
-    result = run_pipeline(transcript, title, model, chunk_size, overlap)
+    result = run_pipeline(transcript, title, model, chunk_size, overlap, output_language=output_language)
     return result, title
 
 
 def process_local_file(
     file_bytes: bytes, filename: str, model: str, chunk_size: int, overlap: int,
-    whisper_lang: str, whisper_model: str,
+    whisper_lang: str, whisper_model: str, output_language: str = "Français",
 ) -> tuple[str, str]:
     """Transcribe local audio/video file then run pipeline."""
     from src.whisper_transcriber import transcribe_local_file
@@ -188,7 +200,7 @@ def process_local_file(
     progress_bar.progress(30)
     time.sleep(0.4)
 
-    result = run_pipeline(transcript, title, model, chunk_size, overlap)
+    result = run_pipeline(transcript, title, model, chunk_size, overlap, output_language=output_language)
     return result, title
 
 
@@ -273,10 +285,24 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 🤖 Modèle")
 
-    available_models = list(config.MODEL_CONTEXTS.keys())
-    selected_model = st.sidebar.selectbox("Modèle LLM", options=available_models, index=0)
+    show_all_models = st.sidebar.toggle("Afficher tous les modèles", value=False,
+                                        help="Par défaut seuls les modèles gratuits sont affichés.")
 
-    ctx_limit = config.get_model_context_limit(selected_model)
+    if show_all_models:
+        model_map = _cached_all_models()
+        st.sidebar.caption(f"{len(model_map)} modèles disponibles (gratuits + payants)")
+    else:
+        model_map = _cached_free_models()
+        st.sidebar.caption(f"✅ {len(model_map)} modèles **gratuits** disponibles")
+
+    available_models = sorted(model_map.keys())
+    # Prefer llama-3.3-70b:free as default when present
+    default_model = config.DEFAULT_MODEL
+    default_idx = available_models.index(default_model) if default_model in available_models else 0
+
+    selected_model = st.sidebar.selectbox("Modèle LLM", options=available_models, index=default_idx)
+
+    ctx_limit = model_map.get(selected_model, config.get_model_context_limit(selected_model))
     chunk_size = st.sidebar.number_input(
         "Tokens par chunk",
         min_value=1000, max_value=ctx_limit - 4000,
@@ -287,6 +313,24 @@ def main():
         min_value=100, max_value=chunk_size // 2,
         value=min(chunk_size // 10, config.CHUNK_OVERLAP_TOKENS), step=100,
     )
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 🌐 Langue du résumé")
+    LANGUAGE_OPTIONS = {
+        "🇫🇷 Français": "Français",
+        "🇬🇧 English": "English",
+        "🇪🇸 Español": "Español",
+        "🇩🇪 Deutsch": "Deutsch",
+        "🇵🇹 Português": "Português",
+        "🇮🇹 Italiano": "Italiano",
+    }
+    selected_lang_label = st.sidebar.selectbox(
+        "Langue de sortie",
+        options=list(LANGUAGE_OPTIONS.keys()),
+        index=0,
+        help="Langue dans laquelle le résumé sera généré (indépendante de la langue de la vidéo).",
+    )
+    output_language = LANGUAGE_OPTIONS[selected_lang_label]
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 🎙️ Whisper")
@@ -308,7 +352,8 @@ def main():
         help="tiny = rapide, large = précis.",
     )
 
-    st.sidebar.markdown(f"**Contexte modèle :** {ctx_limit:,} tokens")
+    free_tag = " 🆓" if selected_model.endswith(":free") else ""
+    st.sidebar.markdown(f"**Contexte :** {ctx_limit:,} tokens{free_tag}")
 
     # History
     if st.session_state.history:
@@ -366,6 +411,7 @@ def main():
                         url_input, selected_model, chunk_size, overlap,
                         force_whisper=need_whisper,
                         whisper_lang=whisper_lang, whisper_model=whisper_model_size,
+                        output_language=output_language,
                     )
                     st.session_state.analysis_result = result
                     st.session_state.current_title = title
@@ -404,6 +450,7 @@ def main():
                     result, title = process_local_file(
                         file_bytes, uploaded_file.name, selected_model, chunk_size, overlap,
                         whisper_lang=whisper_lang, whisper_model=whisper_model_size,
+                        output_language=output_language,
                     )
                     st.session_state.analysis_result = result
                     st.session_state.current_title = title

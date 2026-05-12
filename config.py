@@ -23,7 +23,7 @@ def _get(key: str, default: str = "") -> str:
 
 OPENROUTER_API_KEY = _get("OPENROUTER_API_KEY")
 OPENAI_API_KEY = _get("OPENAI_API_KEY")
-DEFAULT_MODEL = _get("DEFAULT_MODEL", "meta-llama/llama-3.3-70b-instruct")
+DEFAULT_MODEL = _get("DEFAULT_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
 CHUNK_SIZE_TOKENS = int(_get("CHUNK_SIZE_TOKENS", "12000"))
 CHUNK_OVERLAP_TOKENS = int(_get("CHUNK_OVERLAP_TOKENS", "1200"))
 WHISPER_MODEL = _get("WHISPER_MODEL", "base")
@@ -42,6 +42,13 @@ MODEL_LIMITS = {
 }
 
 MODEL_CONTEXTS = {
+    # ── Gratuits (suffixe :free) ──────────────────────────────
+    "meta-llama/llama-3.1-8b-instruct:free": 128000,
+    "meta-llama/llama-3.3-70b-instruct:free": 128000,
+    "google/gemma-3-12b-it:free": 96000,
+    "mistralai/mistral-7b-instruct:free": 32000,
+    "deepseek/deepseek-r1:free": 64000,
+    # ── Payants ──────────────────────────────────────────────
     "meta-llama/llama-3.3-70b-instruct": 128000,
     "meta-llama/llama-3.1-70b-instruct": 128000,
     "meta-llama/llama-3.1-8b-instruct": 128000,

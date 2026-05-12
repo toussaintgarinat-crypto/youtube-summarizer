@@ -19,12 +19,13 @@ def load_analyzer_prompt() -> str:
     prompt_path = get_prompts_dir() / "analyzer.xml"
     return prompt_path.read_text(encoding="utf-8")
 
-def prepare_analyzer_prompt(transcript: str, video_title: str) -> str:
+def prepare_analyzer_prompt(transcript: str, video_title: str, output_language: str = "Français") -> str:
     """Prepare analyzer prompt with transcript."""
     prompt_template = load_analyzer_prompt()
     return prompt_template.format(
         video_title=video_title,
-        transcript=transcript
+        transcript=transcript,
+        output_language=output_language,
     )
 
 def call_llm(
@@ -82,11 +83,24 @@ def call_llm(
             )
             
             if response.status_code == 429:
-                # Rate limit - wait and retry
                 wait_time = (attempt + 1) * 10
                 time.sleep(wait_time)
                 continue
-            
+
+            if response.status_code == 403:
+                raise ValueError(
+                    "Clé API OpenRouter invalide ou accès refusé (403).\n"
+                    "• Vérifiez votre clé sur openrouter.ai/keys\n"
+                    "• Si votre compte est vide, choisissez un modèle gratuit (suffixe ':free')\n"
+                    "• Exemple de modèle gratuit : meta-llama/llama-3.1-8b-instruct:free"
+                )
+
+            if response.status_code == 401:
+                raise ValueError(
+                    "Clé API OpenRouter non reconnue (401).\n"
+                    "Vérifiez que votre clé commence bien par 'sk-or-v1-'."
+                )
+
             response.raise_for_status()
             data = response.json()
             
@@ -106,8 +120,9 @@ def analyze_chunk(
     model: str = None,
     max_tokens: int = 4000,
     api_key: str = None,
+    output_language: str = "Français",
 ) -> str:
-    prompt = prepare_analyzer_prompt(transcript_chunk, video_title)
+    prompt = prepare_analyzer_prompt(transcript_chunk, video_title, output_language)
     return call_llm(prompt, model, max_tokens, api_key=api_key)
 
 def extract_title_from_analysis(analysis: str) -> str:

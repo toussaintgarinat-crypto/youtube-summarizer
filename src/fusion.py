@@ -15,15 +15,16 @@ def load_fusion_prompt() -> str:
     prompt_path = get_prompts_dir() / "fusion.xml"
     return prompt_path.read_text(encoding="utf-8")
 
-def prepare_fusion_prompt(analyses: list, video_title: str) -> str:
+def prepare_fusion_prompt(analyses: list, video_title: str, output_language: str = "Français") -> str:
     """Prepare fusion prompt with analyses."""
     prompt_template = load_fusion_prompt()
-    
+
     analyses_text = "\n\n---\n\n".join(analyses)
-    
+
     return prompt_template.format(
         video_title=video_title,
-        analyses=analyses_text
+        analyses=analyses_text,
+        output_language=output_language,
     )
 
 def merge_chapter_tables(chapters_list: list) -> list:
@@ -55,7 +56,7 @@ def select_top_insights(insights_list: list, max_insights: int = 3) -> list:
     
     return all_insights[:max_insights]
 
-def fusion_analyses(analyses: list, video_title: str, model: str = None, api_key: str = None) -> str:
+def fusion_analyses(analyses: list, video_title: str, model: str = None, api_key: str = None, output_language: str = "Français") -> str:
     """Fusionne plusieurs analyses en un rapport final."""
     from src.analyzer import call_llm
 
@@ -63,5 +64,5 @@ def fusion_analyses(analyses: list, video_title: str, model: str = None, api_key
         return analyses[0]
 
     model = model or config.DEFAULT_MODEL
-    prompt = prepare_fusion_prompt(analyses, video_title)
+    prompt = prepare_fusion_prompt(analyses, video_title, output_language)
     return call_llm(prompt, model, api_key=api_key)
