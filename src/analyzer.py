@@ -71,8 +71,7 @@ def call_llm(
         "temperature": temperature
     }
     
-    # Retry logic
-    max_retries = 3
+    max_retries = 5
     for attempt in range(max_retries):
         try:
             response = requests.post(
@@ -81,19 +80,6 @@ def call_llm(
                 json=payload,
                 timeout=180
             )
-            
-            if response.status_code == 429:
-                wait_time = (attempt + 1) * 10
-                time.sleep(wait_time)
-                continue
-
-            if response.status_code == 403:
-                raise ValueError(
-                    "Clé API OpenRouter invalide ou accès refusé (403).\n"
-                    "• Vérifiez votre clé sur openrouter.ai/keys\n"
-                    "• Si votre compte est vide, choisissez un modèle gratuit (suffixe ':free')\n"
-                    "• Exemple de modèle gratuit : meta-llama/llama-3.1-8b-instruct:free"
-                )
 
             if response.status_code == 401:
                 raise ValueError(
@@ -101,18 +87,51 @@ def call_llm(
                     "Vérifiez que votre clé commence bien par 'sk-or-v1-'."
                 )
 
+            if response.status_code == 403:
+                raise ValueError(
+                    "Accès refusé (403). Vérifiez votre clé sur openrouter.ai/keys\n"
+                    "et choisissez un modèle gratuit (suffixe ':free')."
+                )
+
+            if response.status_code == 429:
+                # Respect retry_after from OpenRouter metadata if present
+                try:
+                    retry_after = int(response.json()["error"]["metadata"].get("retry_after_seconds", 0))
+                except Exception:
+                    retry_after = 0
+                wait_time = max(retry_after + 2, (attempt + 1) * 15)
+                time.sleep(wait_time)
+                continue
+
             response.raise_for_status()
             data = response.json()
-            
+
+            # OpenRouter sometimes returns HTTP 200 with an error body
+            if "error" in data:
+                err = data["error"]
+                code = err.get("code", 0)
+                msg = err.get("message", str(err))
+                if code == 429:
+                    wait_time = max(
+                        int(err.get("metadata", {}).get("retry_after_seconds", 0)) + 2,
+                        (attempt + 1) * 15,
+                    )
+                    time.sleep(wait_time)
+                    continue
+                raise ValueError(f"Erreur modèle ({code}) : {msg}")
+
             return data['choices'][0]['message']['content']
-            
+
         except requests.exceptions.RequestException as e:
             if attempt < max_retries - 1:
                 time.sleep(5)
                 continue
-            raise ValueError(f"Erreur API: {str(e)}")
-    
-    raise ValueError("Échec après plusieurs tentatives")
+            raise ValueError(f"Erreur réseau : {str(e)}")
+
+    raise ValueError(
+        "Le modèle est temporairement surchargé (rate limit).\n"
+        "Essayez un autre modèle gratuit dans la liste ou réessayez dans quelques secondes."
+    )
 
 def analyze_chunk(
     transcript_chunk: str,
