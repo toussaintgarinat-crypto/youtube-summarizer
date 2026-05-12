@@ -2,7 +2,9 @@ __pycache__/
 *.pyc
 *.pyo
 .env
-dist/YouTubeSummarizer/_internal/
+.DS_Store
+dist/
 build/
 *.egg-info/
 .eggs/
+*.spec

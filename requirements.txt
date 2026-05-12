@@ -1,0 +1,8 @@
+youtube-transcript-api
+tiktoken
+python-dotenv
+streamlit
+requests
+fpdf2
+openai
+yt-dlp
