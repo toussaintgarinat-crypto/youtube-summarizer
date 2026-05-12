@@ -16,16 +16,63 @@ st.set_page_config(
 )
 
 
+# ──────────────────────────────────────────────────────────────
+# Password protection
+# ──────────────────────────────────────────────────────────────
+
+def check_password() -> bool:
+    """Show login screen if APP_PASSWORD is set. Returns True when access is granted."""
+    app_password = config._get("APP_PASSWORD", "")
+
+    if not app_password:
+        return True  # No password configured → open access
+
+    if st.session_state.get("authenticated"):
+        return True
+
+    st.markdown(
+        "<h1 style='text-align:center;margin-top:80px'>📺 YouTube Summarizer</h1>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<p style='text-align:center;color:gray'>Entrez le mot de passe pour accéder à l'application</p>",
+        unsafe_allow_html=True,
+    )
+
+    col = st.columns([1, 2, 1])[1]
+    with col:
+        pwd = st.text_input("Mot de passe", type="password", label_visibility="collapsed",
+                            placeholder="Mot de passe...")
+        if st.button("Accéder →", type="primary", use_container_width=True):
+            if pwd == app_password:
+                st.session_state.authenticated = True
+                st.rerun()
+            else:
+                st.error("Mot de passe incorrect.")
+
+    return False
+
+
+# ──────────────────────────────────────────────────────────────
+# Session state
+# ──────────────────────────────────────────────────────────────
+
 def init_session_state():
     defaults = {
         "analysis_result": None,
         "current_title": "",
         "is_processing": False,
         "history": [],
+        "authenticated": False,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = val
+
+
+def active_api_key() -> str:
+    """Return the user's custom key if set, otherwise the default from config/secrets."""
+    return st.session_state.get("custom_api_key", "") or config.OPENROUTER_API_KEY
 
 
 # ──────────────────────────────────────────────────────────────
@@ -34,6 +81,7 @@ def init_session_state():
 
 def run_pipeline(transcript: list, video_title: str, model: str, chunk_size: int, overlap: int) -> str:
     """Chunk → Analyze → Fuse."""
+    api_key = active_api_key()
     progress_bar = st.progress(0)
     status_text = st.empty()
 
@@ -47,7 +95,7 @@ def run_pipeline(transcript: list, video_title: str, model: str, chunk_size: int
         for i, chunk in enumerate(chunks):
             status_text.text(f"🤖 Analyse chunk {i + 1}/{len(chunks)}...")
             progress_bar.progress(20 + 70 * (i + 1) // len(chunks))
-            analyses.append(analyzer.analyze_chunk(chunk["text"], video_title, model=model))
+            analyses.append(analyzer.analyze_chunk(chunk["text"], video_title, model=model, api_key=api_key))
             if len(chunks) > 1:
                 time.sleep(1)
 
@@ -55,7 +103,7 @@ def run_pipeline(transcript: list, video_title: str, model: str, chunk_size: int
         if len(analyses) > 1:
             status_text.text("🔗 Fusion des analyses...")
             progress_bar.progress(95)
-            final_analysis = fusion.fusion_analyses(analyses, video_title, model)
+            final_analysis = fusion.fusion_analyses(analyses, video_title, model, api_key=api_key)
 
         progress_bar.progress(100)
         status_text.text("✅ Terminé !")
@@ -68,18 +116,12 @@ def run_pipeline(transcript: list, video_title: str, model: str, chunk_size: int
 
 
 def process_url(
-    url: str,
-    model: str,
-    chunk_size: int,
-    overlap: int,
-    force_whisper: bool,
-    whisper_lang: str,
-    whisper_model: str,
+    url: str, model: str, chunk_size: int, overlap: int,
+    force_whisper: bool, whisper_lang: str, whisper_model: str,
 ) -> tuple[str, str]:
     """Fetch transcript (or Whisper fallback) then run pipeline."""
     progress_bar = st.progress(0)
     status_text = st.empty()
-
     transcript_data = None
 
     if not force_whisper:
@@ -87,7 +129,6 @@ def process_url(
             status_text.text("📥 Extraction du transcript...")
             progress_bar.progress(10)
             transcript_data = extractor.get_transcript(url)
-
             if not transcript_data.get("transcript"):
                 warning = transcript_data.get("warning", "Aucun transcript disponible")
                 st.warning(f"⚠️ {warning} — passage en mode Whisper...")
@@ -121,13 +162,8 @@ def process_url(
 
 
 def process_local_file(
-    file_bytes: bytes,
-    filename: str,
-    model: str,
-    chunk_size: int,
-    overlap: int,
-    whisper_lang: str,
-    whisper_model: str,
+    file_bytes: bytes, filename: str, model: str, chunk_size: int, overlap: int,
+    whisper_lang: str, whisper_model: str,
 ) -> tuple[str, str]:
     """Transcribe local audio/video file then run pipeline."""
     from src.whisper_transcriber import transcribe_local_file
@@ -139,8 +175,7 @@ def process_local_file(
     progress_bar.progress(10)
 
     transcript_data = transcribe_local_file(
-        file_bytes,
-        filename,
+        file_bytes, filename,
         language=whisper_lang if whisper_lang != "auto" else None,
         model_size=whisper_model,
     )
@@ -162,15 +197,10 @@ def process_local_file(
 # ──────────────────────────────────────────────────────────────
 
 def add_to_history(title: str, source: str, result: str):
-    st.session_state.history.insert(
-        0,
-        {
-            "title": title,
-            "source": source,
-            "result": result,
-            "timestamp": datetime.now().strftime("%H:%M:%S"),
-        },
-    )
+    st.session_state.history.insert(0, {
+        "title": title, "source": source,
+        "result": result, "timestamp": datetime.now().strftime("%H:%M:%S"),
+    })
     st.session_state.history = st.session_state.history[:10]
 
 
@@ -183,7 +213,6 @@ def show_result(result: str, title: str):
     st.markdown(f"## 📝 {title}")
 
     col_md, col_pdf = st.columns(2)
-
     with col_md:
         st.download_button(
             label="💾 Télécharger Markdown",
@@ -191,7 +220,6 @@ def show_result(result: str, title: str):
             file_name=f"{title[:40]}_analyse.md",
             mime="text/markdown",
         )
-
     with col_pdf:
         try:
             from src.pdf_exporter import export_to_pdf
@@ -215,11 +243,35 @@ def show_result(result: str, title: str):
 def main():
     init_session_state()
 
+    if not check_password():
+        return
+
     st.title("📺 YouTube Summarizer")
     st.markdown("Résumez n'importe quelle vidéo — YouTube, Twitch, Vimeo, ou n'importe quelle source audio/vidéo.")
 
     # ── Sidebar ──────────────────────────────────────────────
     st.sidebar.header("⚙️ Configuration")
+
+    # Custom OpenRouter API key
+    st.sidebar.markdown("### 🔑 Clé API OpenRouter")
+    custom_key = st.sidebar.text_input(
+        "Votre clé OpenRouter (optionnel)",
+        type="password",
+        placeholder="sk-or-v1-...",
+        help="Laissez vide pour utiliser la clé par défaut. Obtenez une clé gratuite sur openrouter.ai",
+        key="custom_api_key",
+    )
+
+    key_in_use = custom_key or config.OPENROUTER_API_KEY
+    if custom_key:
+        st.sidebar.success("Votre clé personnelle est utilisée")
+    elif config.OPENROUTER_API_KEY:
+        st.sidebar.info("Clé par défaut utilisée")
+    else:
+        st.sidebar.error("Aucune clé API — entrez la vôtre ci-dessus")
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 🤖 Modèle")
 
     available_models = list(config.MODEL_CONTEXTS.keys())
     selected_model = st.sidebar.selectbox("Modèle LLM", options=available_models, index=0)
@@ -227,17 +279,13 @@ def main():
     ctx_limit = config.get_model_context_limit(selected_model)
     chunk_size = st.sidebar.number_input(
         "Tokens par chunk",
-        min_value=1000,
-        max_value=ctx_limit - 4000,
-        value=config.CHUNK_SIZE_TOKENS,
-        step=1000,
+        min_value=1000, max_value=ctx_limit - 4000,
+        value=config.CHUNK_SIZE_TOKENS, step=1000,
     )
     overlap = st.sidebar.number_input(
         "Chevauchement (tokens)",
-        min_value=100,
-        max_value=chunk_size // 2,
-        value=min(chunk_size // 10, config.CHUNK_OVERLAP_TOKENS),
-        step=100,
+        min_value=100, max_value=chunk_size // 2,
+        value=min(chunk_size // 10, config.CHUNK_OVERLAP_TOKENS), step=100,
     )
 
     st.sidebar.markdown("---")
@@ -257,14 +305,8 @@ def main():
         "Modèle Whisper local",
         options=["tiny", "base", "small", "medium", "large"],
         index=1,
-        help="tiny = rapide, large = précis. Nécessite openai-whisper installé.",
+        help="tiny = rapide, large = précis.",
     )
-
-    openai_key = getattr(config, "OPENAI_API_KEY", "")
-    if openai_key:
-        st.sidebar.success("Whisper API (OpenAI) activé")
-    else:
-        st.sidebar.caption("OPENAI_API_KEY non définie — Whisper local sera utilisé si nécessaire.")
 
     st.sidebar.markdown(f"**Contexte modèle :** {ctx_limit:,} tokens")
 
@@ -297,9 +339,7 @@ def main():
             st.write("")
             st.write("")
             analyze_url_btn = st.button(
-                "🚀 Analyser",
-                type="primary",
-                key="btn_url",
+                "🚀 Analyser", type="primary", key="btn_url",
                 disabled=st.session_state.is_processing,
             )
 
@@ -307,33 +347,25 @@ def main():
         native_str = " · ".join(f"{p['icon']} {p['name']}" for p in platforms)
         st.caption(
             f"Transcript natif : {native_str}   |   "
-            "Whisper (yt-dlp) : YouTube, Twitch, Vimeo, Dailymotion, TikTok, Twitter/X, Instagram, "
-            "SoundCloud, Bilibili… et 1 000+ autres."
+            "Whisper (yt-dlp) : YouTube, Twitch, Vimeo, TikTok, Twitter/X, Instagram, SoundCloud… et 1 000+ autres."
         )
 
         if analyze_url_btn and url_input:
-            if not config.OPENROUTER_API_KEY:
-                st.error("⚠️ Configurez OPENROUTER_API_KEY dans le fichier .env")
+            if not key_in_use:
+                st.error("⚠️ Entrez votre clé OpenRouter dans la barre latérale.")
             else:
-                is_valid, platform_info = extractor.validate_url(url_input)
+                is_valid, _ = extractor.validate_url(url_input)
                 need_whisper = force_whisper or not is_valid
 
                 if not is_valid and not force_whisper:
-                    st.info(
-                        f"Plateforme non reconnue pour le transcript natif. "
-                        f"Tentative via Whisper + yt-dlp..."
-                    )
+                    st.info("Plateforme non reconnue pour le transcript natif — tentative via Whisper + yt-dlp...")
 
                 st.session_state.is_processing = True
                 try:
                     result, title = process_url(
-                        url_input,
-                        selected_model,
-                        chunk_size,
-                        overlap,
+                        url_input, selected_model, chunk_size, overlap,
                         force_whisper=need_whisper,
-                        whisper_lang=whisper_lang,
-                        whisper_model=whisper_model_size,
+                        whisper_lang=whisper_lang, whisper_model=whisper_model_size,
                     )
                     st.session_state.analysis_result = result
                     st.session_state.current_title = title
@@ -347,7 +379,7 @@ def main():
     # ── Tab 2 : Local File ───────────────────────────────────
     with tab_local:
         st.markdown(
-            "Importez directement un fichier audio ou vidéo depuis votre ordinateur. "
+            "Importez un fichier audio ou vidéo depuis votre ordinateur. "
             "Il sera transcrit avec Whisper puis analysé."
         )
 
@@ -358,27 +390,20 @@ def main():
         )
 
         analyze_local_btn = st.button(
-            "🚀 Transcrire & Analyser",
-            type="primary",
-            key="btn_local",
+            "🚀 Transcrire & Analyser", type="primary", key="btn_local",
             disabled=st.session_state.is_processing or uploaded_file is None,
         )
 
         if analyze_local_btn and uploaded_file:
-            if not config.OPENROUTER_API_KEY:
-                st.error("⚠️ Configurez OPENROUTER_API_KEY dans le fichier .env")
+            if not key_in_use:
+                st.error("⚠️ Entrez votre clé OpenRouter dans la barre latérale.")
             else:
                 st.session_state.is_processing = True
                 try:
                     file_bytes = uploaded_file.read()
                     result, title = process_local_file(
-                        file_bytes,
-                        uploaded_file.name,
-                        selected_model,
-                        chunk_size,
-                        overlap,
-                        whisper_lang=whisper_lang,
-                        whisper_model=whisper_model_size,
+                        file_bytes, uploaded_file.name, selected_model, chunk_size, overlap,
+                        whisper_lang=whisper_lang, whisper_model=whisper_model_size,
                     )
                     st.session_state.analysis_result = result
                     st.session_state.current_title = title

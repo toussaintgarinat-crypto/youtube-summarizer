@@ -31,7 +31,8 @@ def call_llm(
     prompt: str,
     model: str = None,
     max_tokens: int = 4000,
-    temperature: float = 0.7
+    temperature: float = 0.7,
+    api_key: str = None,
 ) -> str:
     """
     Call OpenRouter LLM API.
@@ -46,14 +47,15 @@ def call_llm(
         LLM response text
     """
     model = model or config.DEFAULT_MODEL
-    
-    if not config.OPENROUTER_API_KEY:
-        raise ValueError("OPENROUTER_API_KEY non configurée dans .env")
-    
+    active_key = api_key or config.OPENROUTER_API_KEY
+
+    if not active_key:
+        raise ValueError("Clé OpenRouter manquante. Entrez votre clé dans la barre latérale ou configurez OPENROUTER_API_KEY.")
+
     # OpenRouter API
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
-        "Authorization": f"Bearer {config.OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {active_key}",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://youtube-summarizer.local",
         "X-Title": "YouTube Summarizer"
@@ -102,22 +104,11 @@ def analyze_chunk(
     transcript_chunk: str,
     video_title: str,
     model: str = None,
-    max_tokens: int = 4000
+    max_tokens: int = 4000,
+    api_key: str = None,
 ) -> str:
-    """
-    Analyse un chunk de transcript.
-    
-    Args:
-        transcript_chunk: Transcript text for this chunk
-        video_title: Video title
-        model: LLM model to use
-        max_tokens: Max tokens for response
-    
-    Returns:
-        Markdown analysis
-    """
     prompt = prepare_analyzer_prompt(transcript_chunk, video_title)
-    return call_llm(prompt, model, max_tokens)
+    return call_llm(prompt, model, max_tokens, api_key=api_key)
 
 def extract_title_from_analysis(analysis: str) -> str:
     """Extract video title from analysis if present."""

@@ -55,18 +55,13 @@ def select_top_insights(insights_list: list, max_insights: int = 3) -> list:
     
     return all_insights[:max_insights]
 
-def fusion_analyses(analyses: list, video_title: str, model: str = None) -> str:
-    """
-    Fusionne plusieurs analyses en un rapport final.
-    """
+def fusion_analyses(analyses: list, video_title: str, model: str = None, api_key: str = None) -> str:
+    """Fusionne plusieurs analyses en un rapport final."""
     from src.analyzer import call_llm
-    
+
     if len(analyses) == 1:
         return analyses[0]
-    
+
     model = model or config.DEFAULT_MODEL
-    
     prompt = prepare_fusion_prompt(analyses, video_title)
-    result = call_llm(prompt, model)
-    
-    return result
+    return call_llm(prompt, model, api_key=api_key)
