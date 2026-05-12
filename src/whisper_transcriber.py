@@ -77,7 +77,14 @@ def check_yt_dlp() -> bool:
     return _find_yt_dlp() is not None
 
 
-def download_audio(url: str, output_dir: str) -> str:
+def _cookies_flags(cookies_path: Optional[str]) -> list:
+    """Return --cookies flag if a cookies file path is provided and exists."""
+    if cookies_path and os.path.isfile(cookies_path):
+        return ["--cookies", cookies_path]
+    return []
+
+
+def download_audio(url: str, output_dir: str, cookies_path: Optional[str] = None) -> str:
     """Download audio from any video URL using yt-dlp. Returns path to audio file."""
     yt_dlp_bin = _find_yt_dlp()
     if not yt_dlp_bin:
@@ -96,6 +103,7 @@ def download_audio(url: str, output_dir: str) -> str:
         "--audio-quality", "5",
         "--no-playlist",
         *_js_runtime_flags(),
+        *_cookies_flags(cookies_path),
         "-o", output_template,
         url,
     ]
@@ -113,12 +121,13 @@ def download_audio(url: str, output_dir: str) -> str:
     raise ValueError("Fichier audio introuvable après téléchargement")
 
 
-def get_video_title_ytdlp(url: str) -> str:
+def get_video_title_ytdlp(url: str, cookies_path: Optional[str] = None) -> str:
     """Get video title using yt-dlp."""
     yt_dlp_bin = _find_yt_dlp() or "yt-dlp"
     try:
         result = subprocess.run(
-            [yt_dlp_bin, "--get-title", "--no-playlist", *_js_runtime_flags(), url],
+            [yt_dlp_bin, "--get-title", "--no-playlist",
+             *_js_runtime_flags(), *_cookies_flags(cookies_path), url],
             capture_output=True, text=True, timeout=30, env=_subprocess_env(),
         )
         if result.returncode == 0 and result.stdout.strip():
@@ -212,13 +221,14 @@ def transcribe_audio(
 
 
 def transcribe_url(
-    url: str, language: Optional[str] = None, model_size: str = "base"
+    url: str, language: Optional[str] = None, model_size: str = "base",
+    cookies_path: Optional[str] = None,
 ) -> dict:
     """Download audio from any video URL and transcribe with Whisper."""
     tmp_dir = tempfile.mkdtemp()
     try:
-        audio_path = download_audio(url, tmp_dir)
-        title = get_video_title_ytdlp(url)
+        audio_path = download_audio(url, tmp_dir, cookies_path=cookies_path)
+        title = get_video_title_ytdlp(url, cookies_path=cookies_path)
         segments = transcribe_audio(audio_path, language=language, model_size=model_size)
 
         if not segments:

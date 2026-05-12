@@ -139,7 +139,7 @@ def run_pipeline(transcript: list, video_title: str, model: str, chunk_size: int
 def process_url(
     url: str, model: str, chunk_size: int, overlap: int,
     force_whisper: bool, whisper_lang: str, whisper_model: str,
-    output_language: str = "Français",
+    output_language: str = "Français", cookies_path: str = None,
 ) -> tuple[str, str]:
     """Fetch transcript (or Whisper fallback) then run pipeline."""
     progress_bar = st.progress(0)
@@ -166,6 +166,7 @@ def process_url(
             url,
             language=whisper_lang if whisper_lang != "auto" else None,
             model_size=whisper_model,
+            cookies_path=cookies_path,
         )
         progress_bar.progress(28)
 
@@ -343,6 +344,29 @@ def main():
     output_language = LANGUAGE_OPTIONS[selected_lang_label]
 
     st.sidebar.markdown("---")
+    st.sidebar.markdown("### 🍪 Cookies YouTube")
+    st.sidebar.caption(
+        "Si YouTube bloque les téléchargements (erreur 403), "
+        "importez un fichier cookies.txt depuis votre navigateur."
+    )
+    cookies_file = st.sidebar.file_uploader(
+        "cookies.txt (Netscape format)",
+        type=["txt"],
+        label_visibility="collapsed",
+        help="Exportez vos cookies YouTube avec l'extension 'Get cookies.txt LOCALLY' sur Chrome/Firefox.",
+    )
+    # Write cookies to a temp file so yt-dlp can read it
+    cookies_path = None
+    if cookies_file:
+        import tempfile
+        _tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode="wb")
+        _tmp.write(cookies_file.read())
+        _tmp.flush()
+        _tmp.close()
+        cookies_path = _tmp.name
+        st.sidebar.success("✅ Cookies chargés")
+
+    st.sidebar.markdown("---")
     st.sidebar.markdown("### 🎙️ Whisper")
 
     force_whisper = st.sidebar.checkbox(
@@ -422,6 +446,7 @@ def main():
                         force_whisper=need_whisper,
                         whisper_lang=whisper_lang, whisper_model=whisper_model_size,
                         output_language=output_language,
+                        cookies_path=cookies_path,
                     )
                     st.session_state.analysis_result = result
                     st.session_state.current_title = title
