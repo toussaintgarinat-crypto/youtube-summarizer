@@ -3,6 +3,7 @@ __pycache__/
 *.pyo
 .env
 .DS_Store
+.streamlit/secrets.toml
 dist/
 build/
 *.egg-info/
