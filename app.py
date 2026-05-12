@@ -8,6 +8,8 @@ import config
 from src import extractor, chunker, analyzer, fusion
 from src.models import fetch_free_models, fetch_all_models
 import time
+import tempfile
+import os
 from datetime import datetime
 
 
@@ -19,6 +21,30 @@ def _cached_free_models() -> dict:
 @st.cache_data(ttl=3600, show_spinner=False)
 def _cached_all_models() -> dict:
     return fetch_all_models()
+
+
+@st.cache_resource(show_spinner=False)
+def _server_cookies_path() -> str | None:
+    """Write YOUTUBE_COOKIES secret to a temp file once. Returns path or None."""
+    content = config.YOUTUBE_COOKIES
+    if not content or not content.strip():
+        return None
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode="w", encoding="utf-8")
+    tmp.write(content)
+    tmp.flush()
+    tmp.close()
+    return tmp.name
+
+
+def resolve_cookies_path(user_upload) -> str | None:
+    """User upload takes priority; fall back to server-side cookies from secrets."""
+    if user_upload:
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode="wb")
+        tmp.write(user_upload.read())
+        tmp.flush()
+        tmp.close()
+        return tmp.name
+    return _server_cookies_path()
 
 st.set_page_config(
     page_title="YouTube Summarizer",
@@ -345,26 +371,24 @@ def main():
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 🍪 Cookies YouTube")
-    st.sidebar.caption(
-        "Si YouTube bloque les téléchargements (erreur 403), "
-        "importez un fichier cookies.txt depuis votre navigateur."
-    )
+    server_cookies = _server_cookies_path()
+    if server_cookies:
+        st.sidebar.success("✅ Cookies configurés (serveur)", icon="🔒")
+        st.sidebar.caption("Les cookies du serveur sont utilisés automatiquement.")
+    else:
+        st.sidebar.caption(
+            "Si YouTube bloque (erreur 403), importez votre cookies.txt. "
+            "Ou configurez YOUTUBE_COOKIES dans les secrets Streamlit pour tous les utilisateurs."
+        )
     cookies_file = st.sidebar.file_uploader(
-        "cookies.txt (Netscape format)",
+        "cookies.txt personnel (optionnel)",
         type=["txt"],
         label_visibility="collapsed",
         help="Exportez vos cookies YouTube avec l'extension 'Get cookies.txt LOCALLY' sur Chrome/Firefox.",
     )
-    # Write cookies to a temp file so yt-dlp can read it
-    cookies_path = None
+    cookies_path = resolve_cookies_path(cookies_file)
     if cookies_file:
-        import tempfile
-        _tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode="wb")
-        _tmp.write(cookies_file.read())
-        _tmp.flush()
-        _tmp.close()
-        cookies_path = _tmp.name
-        st.sidebar.success("✅ Cookies chargés")
+        st.sidebar.success("✅ Vos cookies personnels sont utilisés")
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 🎙️ Whisper")

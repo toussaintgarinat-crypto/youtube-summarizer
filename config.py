@@ -23,6 +23,7 @@ def _get(key: str, default: str = "") -> str:
 
 OPENROUTER_API_KEY = _get("OPENROUTER_API_KEY")
 OPENAI_API_KEY = _get("OPENAI_API_KEY")
+YOUTUBE_COOKIES = _get("YOUTUBE_COOKIES")  # Netscape cookies.txt content (optional)
 DEFAULT_MODEL = _get("DEFAULT_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
 CHUNK_SIZE_TOKENS = int(_get("CHUNK_SIZE_TOKENS", "12000"))
 CHUNK_OVERLAP_TOKENS = int(_get("CHUNK_OVERLAP_TOKENS", "1200"))
