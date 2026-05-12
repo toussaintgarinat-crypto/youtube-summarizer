@@ -413,6 +413,10 @@ class App:
 
     def _pipeline(self, transcript, title, model, chunk_size, overlap,
                   api_key, lang_out) -> str:
+        # Build fallback list from free models (excluding the selected one)
+        free_models = list(self._free_models.keys())
+        fallbacks = [m for m in free_models if m != model]
+
         self._status("✂️ Découpage en chunks…")
         chunks = chunker.chunk_transcript(transcript, max_tokens=chunk_size,
                                           overlap_tokens=overlap, model=model)
@@ -423,7 +427,8 @@ class App:
             self._status(f"🤖 Analyse chunk {i+1}/{len(chunks)}…")
             analyses.append(
                 analyzer.analyze_chunk(chunk["text"], title, model=model,
-                                       api_key=api_key, output_language=lang_out)
+                                       api_key=api_key, output_language=lang_out,
+                                       fallback_models=fallbacks)
             )
             if len(chunks) > 1:
                 time.sleep(1)
@@ -431,7 +436,7 @@ class App:
         if len(analyses) > 1:
             self._status("🔗 Fusion des analyses…")
             return fusion.fusion_analyses(analyses, title, model, api_key=api_key,
-                                          output_language=lang_out)
+                                          output_language=lang_out, fallback_models=fallbacks)
         return analyses[0]
 
     def _status(self, text: str):

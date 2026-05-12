@@ -56,7 +56,7 @@ def select_top_insights(insights_list: list, max_insights: int = 3) -> list:
     
     return all_insights[:max_insights]
 
-def fusion_analyses(analyses: list, video_title: str, model: str = None, api_key: str = None, output_language: str = "Français") -> str:
+def fusion_analyses(analyses: list, video_title: str, model: str = None, api_key: str = None, output_language: str = "Français", fallback_models: list = None) -> str:
     """Fusionne plusieurs analyses en un rapport final."""
     from src.analyzer import call_llm
 
@@ -65,4 +65,4 @@ def fusion_analyses(analyses: list, video_title: str, model: str = None, api_key
 
     model = model or config.DEFAULT_MODEL
     prompt = prepare_fusion_prompt(analyses, video_title, output_language)
-    return call_llm(prompt, model, api_key=api_key)
+    return call_llm(prompt, model, api_key=api_key, fallback_models=fallback_models)

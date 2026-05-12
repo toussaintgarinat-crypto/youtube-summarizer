@@ -96,6 +96,10 @@ def run_pipeline(transcript: list, video_title: str, model: str, chunk_size: int
     progress_bar = st.progress(0)
     status_text = st.empty()
 
+    # Build fallback list from free models (excluding the selected one)
+    free_models = list(_cached_free_models().keys())
+    fallbacks = [m for m in free_models if m != model]
+
     try:
         status_text.text("✂️ Découpage en chunks...")
         chunks = chunker.chunk_transcript(transcript, max_tokens=chunk_size, overlap_tokens=overlap, model=model)
@@ -106,7 +110,10 @@ def run_pipeline(transcript: list, video_title: str, model: str, chunk_size: int
         for i, chunk in enumerate(chunks):
             status_text.text(f"🤖 Analyse chunk {i + 1}/{len(chunks)}...")
             progress_bar.progress(20 + 70 * (i + 1) // len(chunks))
-            analyses.append(analyzer.analyze_chunk(chunk["text"], video_title, model=model, api_key=api_key, output_language=output_language))
+            analyses.append(analyzer.analyze_chunk(
+                chunk["text"], video_title, model=model, api_key=api_key,
+                output_language=output_language, fallback_models=fallbacks,
+            ))
             if len(chunks) > 1:
                 time.sleep(1)
 
@@ -114,7 +121,10 @@ def run_pipeline(transcript: list, video_title: str, model: str, chunk_size: int
         if len(analyses) > 1:
             status_text.text("🔗 Fusion des analyses...")
             progress_bar.progress(95)
-            final_analysis = fusion.fusion_analyses(analyses, video_title, model, api_key=api_key, output_language=output_language)
+            final_analysis = fusion.fusion_analyses(
+                analyses, video_title, model, api_key=api_key,
+                output_language=output_language, fallback_models=fallbacks,
+            )
 
         progress_bar.progress(100)
         status_text.text("✅ Terminé !")
