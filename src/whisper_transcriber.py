@@ -1,7 +1,6 @@
 """Audio transcription using Whisper (local model or OpenAI API) + yt-dlp download"""
 
 import os
-import json
 import tempfile
 import shutil
 import subprocess
@@ -153,18 +152,6 @@ def _compress_for_whisper(src: str, dst: str) -> bool:
         return False
 
 
-def _get_audio_duration_sec(path: str) -> float:
-    try:
-        r = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", path],
-            capture_output=True, text=True, timeout=30,
-        )
-        if r.returncode == 0:
-            return float(json.loads(r.stdout)["format"]["duration"])
-    except Exception:
-        pass
-    return 0.0
-
 
 def _split_audio_chunk(src: str, dst: str, start: float, duration: float) -> bool:
     try:
@@ -180,20 +167,17 @@ def _split_audio_chunk(src: str, dst: str, start: float, duration: float) -> boo
 
 
 def _transcribe_chunked(audio_path: str, language: Optional[str], client) -> list:
-    """Split oversized audio into 20-min chunks and transcribe each, stitching timestamps."""
-    total = _get_audio_duration_sec(audio_path)
-    if total <= 0:
-        raise ValueError("Impossible de lire la durée de l'audio pour le découpage en chunks")
-
+    """Split oversized audio into 20-min chunks and transcribe each, stitching timestamps.
+    Stops when ffmpeg produces an empty chunk (end of file reached) — no ffprobe needed."""
     tmp_dir = tempfile.mkdtemp()
     try:
         all_segments = []
         start = 0.0
         idx = 0
-        while start < total:
+        while True:
             chunk_path = os.path.join(tmp_dir, f"chunk_{idx:04d}.mp3")
             if not _split_audio_chunk(audio_path, chunk_path, start, WHISPER_CHUNK_DURATION):
-                break
+                break  # empty chunk = past end of file
             with open(chunk_path, "rb") as f:
                 kwargs = {
                     "model": "whisper-1",
@@ -212,6 +196,8 @@ def _transcribe_chunked(audio_path: str, language: Optional[str], client) -> lis
                 })
             start += WHISPER_CHUNK_DURATION
             idx += 1
+        if not all_segments:
+            raise ValueError("Aucun segment transcrit après découpage en chunks")
         return all_segments
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
