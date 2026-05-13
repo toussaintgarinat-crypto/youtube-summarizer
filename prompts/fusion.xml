@@ -13,7 +13,7 @@
     - FIDÉLITÉ : Ne pas inventer d'informations.
     - TIMESTAMPS : Respecter l'ordre chronologique.
     - LANGUE : Tout en {output_language}. C'est obligatoire.
-    - LIMITE : Résumé détaillé final ne doit pas dépasser 2000 mots.
+    - COUVERTURE : Couvre l'intégralité du contenu vidéo, du début à la fin. Ne jamais tronquer.
   </constraints>
   <output_format>
     # 📺 ANALYSE VIDÉO : {video_title}

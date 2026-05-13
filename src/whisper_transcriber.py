@@ -145,7 +145,7 @@ def _compress_for_whisper(src: str, dst: str) -> bool:
     try:
         r = subprocess.run(
             ["ffmpeg", "-y", "-i", src, "-ar", "16000", "-ac", "1", "-b:a", "32k", dst],
-            capture_output=True, timeout=300,
+            capture_output=True, timeout=300, env=_subprocess_env(),
         )
         return r.returncode == 0 and os.path.exists(dst)
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -159,7 +159,7 @@ def _split_audio_chunk(src: str, dst: str, start: float, duration: float) -> boo
             ["ffmpeg", "-y", "-i", src,
              "-ss", str(start), "-t", str(duration),
              "-ar", "16000", "-ac", "1", "-b:a", "32k", dst],
-            capture_output=True, timeout=300,
+            capture_output=True, timeout=300, env=_subprocess_env(),
         )
         return r.returncode == 0 and os.path.exists(dst) and os.path.getsize(dst) > 500
     except Exception:
