@@ -137,16 +137,18 @@ def get_video_title_ytdlp(url: str, cookies_path: Optional[str] = None) -> str:
     return "Video"
 
 
-def transcribe_with_whisper_api(audio_path: str, language: Optional[str] = None) -> list:
+def transcribe_with_whisper_api(
+    audio_path: str, language: Optional[str] = None, api_key: Optional[str] = None
+) -> list:
     """Transcribe using OpenAI Whisper API."""
     try:
         import openai
     except ImportError:
         raise ValueError("Package 'openai' non installé: pip install openai")
 
-    api_key = getattr(config, "OPENAI_API_KEY", "")
+    api_key = api_key or getattr(config, "OPENAI_API_KEY", "")
     if not api_key:
-        raise ValueError("OPENAI_API_KEY non configurée dans .env")
+        raise ValueError("OPENAI_API_KEY non configurée")
 
     client = openai.OpenAI(api_key=api_key)
 
@@ -180,9 +182,8 @@ def transcribe_with_local_whisper(
         import whisper
     except ImportError:
         raise ValueError(
-            "openai-whisper non installé.\n"
-            "Installez-le avec: pip install openai-whisper\n"
-            "(Nécessite ffmpeg: brew install ffmpeg)"
+            "Whisper local non disponible dans cette version de l'application.\n"
+            "Solution : entrez une clé OpenAI dans le champ dédié pour utiliser l'API Whisper."
         )
 
     model = whisper.load_model(model_size)
@@ -203,17 +204,18 @@ def transcribe_with_local_whisper(
 
 
 def transcribe_audio(
-    audio_path: str, language: Optional[str] = None, model_size: str = "base"
+    audio_path: str, language: Optional[str] = None, model_size: str = "base",
+    openai_api_key: Optional[str] = None,
 ) -> list:
     """
     Transcribe audio using best available method.
-    Priority: OpenAI Whisper API (if OPENAI_API_KEY set) → local Whisper model.
+    Priority: OpenAI Whisper API (if key available) → local Whisper model.
     """
-    openai_key = getattr(config, "OPENAI_API_KEY", "")
+    effective_key = openai_api_key or getattr(config, "OPENAI_API_KEY", "")
 
-    if openai_key:
+    if effective_key:
         try:
-            return transcribe_with_whisper_api(audio_path, language)
+            return transcribe_with_whisper_api(audio_path, language, api_key=effective_key)
         except Exception:
             pass  # fall through to local whisper
 
@@ -222,14 +224,17 @@ def transcribe_audio(
 
 def transcribe_url(
     url: str, language: Optional[str] = None, model_size: str = "base",
-    cookies_path: Optional[str] = None,
+    cookies_path: Optional[str] = None, openai_api_key: Optional[str] = None,
 ) -> dict:
     """Download audio from any video URL and transcribe with Whisper."""
     tmp_dir = tempfile.mkdtemp()
     try:
         audio_path = download_audio(url, tmp_dir, cookies_path=cookies_path)
         title = get_video_title_ytdlp(url, cookies_path=cookies_path)
-        segments = transcribe_audio(audio_path, language=language, model_size=model_size)
+        segments = transcribe_audio(
+            audio_path, language=language, model_size=model_size,
+            openai_api_key=openai_api_key,
+        )
 
         if not segments:
             raise ValueError("Aucun segment audio transcrit")
@@ -250,7 +255,8 @@ def transcribe_url(
 
 
 def transcribe_local_file(
-    file_bytes: bytes, filename: str, language: Optional[str] = None, model_size: str = "base"
+    file_bytes: bytes, filename: str, language: Optional[str] = None, model_size: str = "base",
+    openai_api_key: Optional[str] = None,
 ) -> dict:
     """Transcribe an uploaded local audio/video file with Whisper."""
     title = Path(filename).stem
@@ -278,7 +284,10 @@ def transcribe_local_file(
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 pass  # Try with original file; Whisper can handle many formats
 
-        segments = transcribe_audio(audio_path, language=language, model_size=model_size)
+        segments = transcribe_audio(
+            audio_path, language=language, model_size=model_size,
+            openai_api_key=openai_api_key,
+        )
 
         if not segments:
             raise ValueError("Aucun segment audio transcrit")

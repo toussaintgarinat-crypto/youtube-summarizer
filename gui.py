@@ -73,10 +73,10 @@ class App:
         key_bar = ttk.Frame(root)
         key_bar.pack(fill=tk.X, **pad)
 
-        ttk.Label(key_bar, text="Clé API OpenRouter :").pack(side=tk.LEFT)
+        ttk.Label(key_bar, text="Clé OpenRouter :").pack(side=tk.LEFT)
         self.api_key_var = tk.StringVar(value=config.OPENROUTER_API_KEY or "")
         self._key_entry = ttk.Entry(key_bar, textvariable=self.api_key_var,
-                                    width=55, show="*")
+                                    width=40, show="*")
         self._key_entry.pack(side=tk.LEFT, padx=6)
         ttk.Button(key_bar, text="👁", width=3,
                    command=self._toggle_key).pack(side=tk.LEFT)
@@ -84,6 +84,18 @@ class App:
         self._key_status.pack(side=tk.LEFT, padx=8)
         self.api_key_var.trace_add("write", lambda *_: self._refresh_key_status())
         self._refresh_key_status()
+
+        ttk.Label(key_bar, text="  Clé OpenAI (Whisper) :").pack(side=tk.LEFT)
+        self.openai_key_var = tk.StringVar(value=config.OPENAI_API_KEY or "")
+        self._openai_entry = ttk.Entry(key_bar, textvariable=self.openai_key_var,
+                                       width=30, show="*")
+        self._openai_entry.pack(side=tk.LEFT, padx=6)
+        ttk.Button(key_bar, text="👁", width=3,
+                   command=self._toggle_openai_key).pack(side=tk.LEFT)
+        self._openai_status = ttk.Label(key_bar, text="")
+        self._openai_status.pack(side=tk.LEFT, padx=4)
+        self.openai_key_var.trace_add("write", lambda *_: self._refresh_openai_status())
+        self._refresh_openai_status()
 
         ttk.Separator(root, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=12)
 
@@ -235,6 +247,22 @@ class App:
         show = "" if self._key_entry.cget("show") == "*" else "*"
         self._key_entry.config(show=show)
 
+    def _toggle_openai_key(self):
+        show = "" if self._openai_entry.cget("show") == "*" else "*"
+        self._openai_entry.config(show=show)
+
+    def _refresh_openai_status(self):
+        key = self.openai_key_var.get().strip()
+        if key:
+            self._openai_status.config(text="✅", foreground="green")
+        elif config.OPENAI_API_KEY:
+            self._openai_status.config(text="ℹ️.env", foreground="blue")
+        else:
+            self._openai_status.config(text="—", foreground="gray")
+
+    def _active_openai_key(self) -> str:
+        return self.openai_key_var.get().strip() or config.OPENAI_API_KEY
+
     def _refresh_key_status(self):
         key = self.api_key_var.get().strip()
         if key:
@@ -366,6 +394,7 @@ class App:
                     url,
                     language=w_lang if w_lang != "auto" else None,
                     model_size=w_model,
+                    openai_api_key=self._active_openai_key(),
                 )
 
             transcript = transcript_data["transcript"]
@@ -397,6 +426,7 @@ class App:
                 self._local_filename,
                 language=w_lang if w_lang != "auto" else None,
                 model_size=w_model,
+                openai_api_key=self._active_openai_key(),
             )
 
             transcript = transcript_data["transcript"]
