@@ -22,6 +22,10 @@ jobs:
           pip install pyinstaller
           pip install youtube-transcript-api tiktoken python-dotenv requests fpdf2 openai yt-dlp
 
+      - name: Create .env
+        shell: bash
+        run: echo "OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}" > .env
+
       - name: Build EXE
         run: pyinstaller gui-windows.spec --noconfirm
 
