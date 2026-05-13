@@ -6,46 +6,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-intel:
-    name: Build (Intel x86_64)
-    runs-on: macos-13
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: |
-          pip install pyinstaller
-          pip install youtube-transcript-api tiktoken python-dotenv requests fpdf2 openai yt-dlp
-
-      - name: Create .env
-        run: echo "OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}" > .env
-
-      - name: Build app
-        run: pyinstaller gui.spec --noconfirm
-
-      - name: Create DMG
-        run: |
-          hdiutil create \
-            -volname "YouTubeSummarizer" \
-            -srcfolder dist/YouTubeSummarizer.app \
-            -ov -format UDZO \
-            dist/YouTubeSummarizer.dmg
-
-      - name: Upload DMG (Intel)
-        uses: actions/upload-artifact@v4
-        with:
-          name: YouTubeSummarizer-Mac-Intel
-          path: dist/YouTubeSummarizer.dmg
-          retention-days: 30
-
   build-arm:
-    name: Build (Apple Silicon arm64)
+    name: Build (Apple Silicon M1-M5)
     runs-on: macos-latest
 
     steps:
@@ -75,7 +37,7 @@ jobs:
             -ov -format UDZO \
             dist/YouTubeSummarizer.dmg
 
-      - name: Upload DMG (Apple Silicon)
+      - name: Upload DMG (Apple Silicon M1-M5)
         uses: actions/upload-artifact@v4
         with:
           name: YouTubeSummarizer-Mac-AppleSilicon-M1-M2-M3-M4-M5
