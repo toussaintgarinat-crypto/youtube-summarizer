@@ -59,7 +59,19 @@ st.set_page_config(
 
 def check_password() -> bool:
     """Show login screen if APP_PASSWORD is set. Returns True when access is granted."""
-    app_password = config._get("APP_PASSWORD", "")
+    # Read directly from st.secrets so a broken TOML triggers a clear error
+    # instead of silently granting open access.
+    try:
+        app_password = st.secrets.get("APP_PASSWORD", "") or os.getenv("APP_PASSWORD", "")
+    except Exception:
+        app_password = os.getenv("APP_PASSWORD", "")
+        if not app_password:
+            st.error(
+                "⚠️ Impossible de lire les secrets Streamlit (format TOML invalide). "
+                "Vérifiez Settings → Secrets et utilisez des triple-guillemets `\"\"\"` "
+                "pour les valeurs multilignes comme YOUTUBE_COOKIES."
+            )
+            return False
 
     if not app_password:
         return True  # No password configured → open access
