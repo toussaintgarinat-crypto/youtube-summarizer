@@ -1,12 +1,16 @@
 """Audio transcription using Whisper (local model or OpenAI API) + yt-dlp download"""
 
 import os
+import json
 import tempfile
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Optional
 import config
+
+WHISPER_API_MAX_BYTES = 24 * 1024 * 1024  # 24 MB hard limit for Whisper API
+WHISPER_CHUNK_DURATION = 1200             # 20-minute chunks when splitting
 
 
 def _find_yt_dlp() -> Optional[str]:
@@ -137,6 +141,82 @@ def get_video_title_ytdlp(url: str, cookies_path: Optional[str] = None) -> str:
     return "Video"
 
 
+def _compress_for_whisper(src: str, dst: str) -> bool:
+    """Re-encode to 16 kHz mono 32 kbps — enough for speech, ~13 MB/h."""
+    try:
+        r = subprocess.run(
+            ["ffmpeg", "-y", "-i", src, "-ar", "16000", "-ac", "1", "-b:a", "32k", dst],
+            capture_output=True, timeout=300,
+        )
+        return r.returncode == 0 and os.path.exists(dst)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def _get_audio_duration_sec(path: str) -> float:
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", path],
+            capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode == 0:
+            return float(json.loads(r.stdout)["format"]["duration"])
+    except Exception:
+        pass
+    return 0.0
+
+
+def _split_audio_chunk(src: str, dst: str, start: float, duration: float) -> bool:
+    try:
+        r = subprocess.run(
+            ["ffmpeg", "-y", "-i", src,
+             "-ss", str(start), "-t", str(duration),
+             "-ar", "16000", "-ac", "1", "-b:a", "32k", dst],
+            capture_output=True, timeout=300,
+        )
+        return r.returncode == 0 and os.path.exists(dst) and os.path.getsize(dst) > 500
+    except Exception:
+        return False
+
+
+def _transcribe_chunked(audio_path: str, language: Optional[str], client) -> list:
+    """Split oversized audio into 20-min chunks and transcribe each, stitching timestamps."""
+    total = _get_audio_duration_sec(audio_path)
+    if total <= 0:
+        raise ValueError("Impossible de lire la durée de l'audio pour le découpage en chunks")
+
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        all_segments = []
+        start = 0.0
+        idx = 0
+        while start < total:
+            chunk_path = os.path.join(tmp_dir, f"chunk_{idx:04d}.mp3")
+            if not _split_audio_chunk(audio_path, chunk_path, start, WHISPER_CHUNK_DURATION):
+                break
+            with open(chunk_path, "rb") as f:
+                kwargs = {
+                    "model": "whisper-1",
+                    "file": f,
+                    "response_format": "verbose_json",
+                    "timestamp_granularities": ["segment"],
+                }
+                if language:
+                    kwargs["language"] = language
+                result = client.audio.transcriptions.create(**kwargs)
+            for seg in result.segments:
+                all_segments.append({
+                    "text": seg.text,
+                    "start": float(seg.start) + start,
+                    "duration": float(seg.end) - float(seg.start),
+                })
+            start += WHISPER_CHUNK_DURATION
+            idx += 1
+        return all_segments
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def transcribe_with_whisper_api(
     audio_path: str, language: Optional[str] = None, api_key: Optional[str] = None
 ) -> list:
@@ -151,6 +231,9 @@ def transcribe_with_whisper_api(
         raise ValueError("OPENAI_API_KEY non configurée")
 
     client = openai.OpenAI(api_key=api_key)
+
+    if os.path.getsize(audio_path) > WHISPER_API_MAX_BYTES:
+        return _transcribe_chunked(audio_path, language, client)
 
     with open(audio_path, "rb") as f:
         kwargs = {
@@ -231,6 +314,12 @@ def transcribe_url(
     try:
         audio_path = download_audio(url, tmp_dir, cookies_path=cookies_path)
         title = get_video_title_ytdlp(url, cookies_path=cookies_path)
+
+        # Compress to 16kHz mono 32kbps — reduces size ~2× and keeps Whisper API well under 25 MB/h
+        compressed_path = os.path.join(tmp_dir, "audio_compressed.mp3")
+        if _compress_for_whisper(audio_path, compressed_path):
+            audio_path = compressed_path
+
         segments = transcribe_audio(
             audio_path, language=language, model_size=model_size,
             openai_api_key=openai_api_key,
@@ -275,7 +364,7 @@ def transcribe_local_file(
             try:
                 cmd = [
                     "ffmpeg", "-i", audio_path,
-                    "-vn", "-ar", "16000", "-ac", "1", "-b:a", "64k",
+                    "-vn", "-ar", "16000", "-ac", "1", "-b:a", "32k",
                     mp3_path, "-y"
                 ]
                 result = subprocess.run(cmd, capture_output=True, timeout=300)
