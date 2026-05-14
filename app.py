@@ -3,6 +3,8 @@ YouTube Summarizer — Streamlit Web Interface
 Supports: YouTube, Twitch, Vimeo (transcript), any platform via Whisper, local audio/video files.
 """
 
+from __future__ import annotations
+
 import streamlit as st
 import config
 from src import extractor, chunker, analyzer, fusion
@@ -25,7 +27,13 @@ def _cached_all_models() -> dict:
 
 @st.cache_resource(show_spinner=False)
 def _server_cookies_path() -> str | None:
-    """Write YOUTUBE_COOKIES secret to a temp file once. Returns path or None."""
+    """Return path to cookies file: local file takes priority, then YOUTUBE_COOKIES env/secret."""
+    # 1. Local file (avoids TOML parser limitations with large values)
+    local = os.path.join(os.path.dirname(__file__), ".streamlit", "youtube_cookies.txt")
+    if os.path.isfile(local):
+        return local
+
+    # 2. YOUTUBE_COOKIES env var / Streamlit secret (fallback for cloud deployments)
     content = config.YOUTUBE_COOKIES
     if not content or not content.strip():
         return None

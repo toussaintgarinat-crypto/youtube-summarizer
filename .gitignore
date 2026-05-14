@@ -4,6 +4,7 @@ __pycache__/
 .env
 .DS_Store
 .streamlit/secrets.toml
+.streamlit/youtube_cookies.txt
 dist/
 build/
 *.egg-info/
