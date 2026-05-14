@@ -1,0 +1,42 @@
+name: Build Linux
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system dependencies (Tkinter)
+        run: sudo apt-get update && sudo apt-get install -y python3-tk
+
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller
+          pip install youtube-transcript-api tiktoken python-dotenv requests fpdf2 openai yt-dlp
+
+      - name: Create .env
+        run: echo "OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}" > .env
+
+      - name: Build
+        run: pyinstaller gui-linux.spec --noconfirm
+
+      - name: Package as tar.gz
+        run: tar -czf dist/YouTubeSummarizer-Linux.tar.gz -C dist YouTubeSummarizer
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: YouTubeSummarizer-Linux
+          path: dist/YouTubeSummarizer-Linux.tar.gz
+          retention-days: 30
