@@ -108,7 +108,7 @@ def _call_single_model(
 def call_llm(
     prompt: str,
     model: str = None,
-    max_tokens: int = 4000,
+    max_tokens: int = 6000,
     temperature: float = 0.7,
     api_key: str = None,
     fallback_models: list = None,
@@ -141,11 +141,13 @@ def analyze_chunk(
     transcript_chunk: str,
     video_title: str,
     model: str = None,
-    max_tokens: int = 4000,
+    max_tokens: int = None,
     api_key: str = None,
     output_language: str = "Français",
     fallback_models: list = None,
 ) -> str:
+    if max_tokens is None:
+        max_tokens = config.MAX_CHUNK_OUTPUT_TOKENS
     prompt = prepare_analyzer_prompt(transcript_chunk, video_title, output_language)
     return call_llm(prompt, model, max_tokens, api_key=api_key, fallback_models=fallback_models)
 

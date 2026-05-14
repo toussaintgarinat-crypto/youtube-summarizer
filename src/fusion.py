@@ -65,4 +65,6 @@ def fusion_analyses(analyses: list, video_title: str, model: str = None, api_key
 
     model = model or config.DEFAULT_MODEL
     prompt = prepare_fusion_prompt(analyses, video_title, output_language)
-    return call_llm(prompt, model, api_key=api_key, fallback_models=fallback_models)
+    # Scale output tokens with number of chunks (min 8000, max MAX_FUSION_OUTPUT_TOKENS)
+    max_tokens = min(max(8000, len(analyses) * 3000), config.MAX_FUSION_OUTPUT_TOKENS)
+    return call_llm(prompt, model, max_tokens=max_tokens, api_key=api_key, fallback_models=fallback_models)
