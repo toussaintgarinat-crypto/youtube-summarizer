@@ -22,12 +22,6 @@
     ## 🚀 Résumé Exécutif (TL;DR)
     > [Résumé rapide en 3-5 phrases]
 
-    ## 📝 Résumé Détaillé
-    ### 🔹 Contexte et Enjeux
-    [Détails ici...]
-    ### 🔹 Points Techniques / Arguments
-    [Détails ici...]
-
     ## 📍 Chapitrage Temporel
     | Time | Sujet | Description |
     | :--- | :--- | :--- |
@@ -37,6 +31,12 @@
     1. *[Titre]* [MM:SS] : [Explication]
     2. *[Titre]* [MM:SS] : [Explication]
     3. *[Titre]* [MM:SS] : [Explication]
+
+    ## 📝 Résumé Détaillé
+    ### 🔹 Contexte et Enjeux
+    [Détails ici...]
+    ### 🔹 Points Techniques / Arguments
+    [Détails ici...]
   </output_format>
   <self_verification>
     - Les timestamps sont-ils en ordre chronologique ?
