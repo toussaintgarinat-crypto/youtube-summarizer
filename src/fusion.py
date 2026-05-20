@@ -19,7 +19,7 @@ def prepare_fusion_prompt(analyses: list, video_title: str, output_language: str
     """Prepare fusion prompt with analyses."""
     prompt_template = load_fusion_prompt()
 
-    analyses_text = "\n\n---\n\n".join(analyses)
+    analyses_text = "\n\n---\n\n".join(a for a in analyses if a)
 
     return prompt_template.format(
         video_title=video_title,

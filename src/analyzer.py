@@ -94,7 +94,13 @@ def _call_single_model(
                     continue
                 raise ValueError(f"Erreur modèle ({code}) : {err.get('message', str(err))}")
 
-            return data["choices"][0]["message"]["content"]
+            content = data["choices"][0]["message"]["content"]
+            if content is None:
+                raise ValueError(
+                    "Le modèle a retourné une réponse vide. "
+                    "Essayez un autre modèle ou réessayez."
+                )
+            return content
 
         except requests.exceptions.RequestException as e:
             if attempt < max_retries - 1:

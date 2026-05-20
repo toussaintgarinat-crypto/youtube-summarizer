@@ -91,10 +91,22 @@ def get_youtube_transcript(url: str, languages: list = None) -> dict:
     """Get transcript from YouTube video."""
     if languages is None:
         languages = ['fr', 'en', 'es', 'de', 'it', 'pt']
-    
+
+    if re.search(r'youtube\.com/(channel|c|user|@)', url):
+        raise ValueError(
+            "Cette URL est une chaîne YouTube, pas une vidéo.\n"
+            "Colle l'URL d'une vidéo spécifique (ex: youtube.com/watch?v=...)"
+        )
+
+    if re.search(r'youtube\.com/(playlist|feed)', url):
+        raise ValueError(
+            "Cette URL est une playlist YouTube, pas une vidéo.\n"
+            "Colle l'URL d'une vidéo spécifique (ex: youtube.com/watch?v=...)"
+        )
+
     video_id = extract_youtube_id(url)
     if not video_id:
-        raise ValueError("ID YouTube invalide")
+        raise ValueError("URL YouTube invalide. Format attendu : youtube.com/watch?v=VIDEOID ou youtu.be/VIDEOID")
     
     yt_api = YouTubeTranscriptApi()
     
@@ -430,9 +442,23 @@ def validate_url(url: str) -> tuple:
     """Validate URL and return platform info."""
     if not url or not url.strip():
         return False, "URL vide"
-    
-    platform = detect_platform(url.strip())
-    
+
+    url_clean = url.strip()
+
+    if re.search(r'youtube\.com/(channel|c|user|@)', url_clean):
+        return False, (
+            "Cette URL est une chaîne YouTube, pas une vidéo.\n"
+            "Colle l'URL d'une vidéo spécifique (ex: youtube.com/watch?v=...)"
+        )
+
+    if re.search(r'youtube\.com/(playlist|feed)', url_clean):
+        return False, (
+            "Cette URL est une playlist YouTube, pas une vidéo.\n"
+            "Colle l'URL d'une vidéo spécifique (ex: youtube.com/watch?v=...)"
+        )
+
+    platform = detect_platform(url_clean)
+
     if platform == 'unknown':
         return False, (
             "URL non supportée. Formats acceptés:\n"
@@ -440,7 +466,7 @@ def validate_url(url: str) -> tuple:
             "• Twitch: twitch.tv/videos/... (VOD uniquement)\n"
             "• Vimeo: vimeo.com/..."
         )
-    
+
     icon = PLATFORMS.get(platform, {}).get('icon', '🔗')
     return True, f"{icon} {platform.capitalize()}"
 
