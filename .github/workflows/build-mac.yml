@@ -46,7 +46,7 @@ jobs:
 
   build-intel:
     name: Build (Mac Intel x86_64)
-    runs-on: macos-13
+    runs-on: macos-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -65,7 +65,7 @@ jobs:
         run: echo "OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}" > .env
 
       - name: Build app
-        run: pyinstaller gui.spec --noconfirm
+        run: pyinstaller gui-intel.spec --noconfirm
 
       - name: Create DMG
         run: |
