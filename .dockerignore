@@ -1,0 +1,13 @@
+__pycache__
+*.pyc
+.git
+.env
+venv
+.venv
+*.spec
+build/
+dist/
+.DS_Store
+*.log
+.streamlit/secrets.toml
+.streamlit/youtube_cookies.txt

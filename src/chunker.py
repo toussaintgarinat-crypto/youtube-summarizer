@@ -5,14 +5,11 @@ from typing import Optional
 import config
 
 def estimate_tokens(text: str, model: str = "meta-llama/llama-3.3-70b-instruct") -> int:
-    """Estimate token count for text."""
+    """Estimate token count for text using cl100k_base (good approximation for most models)."""
     try:
-        if "claude" in model.lower() or "gpt" in model.lower():
-            enc = tiktoken.get_encoding("cl100k_base")
-        else:
-            enc = tiktoken.get_encoding("cl100k_base")
+        enc = tiktoken.get_encoding("cl100k_base")
         return len(enc.encode(text))
-    except:
+    except Exception:
         return len(text) // 4
 
 def format_timestamp(seconds: float) -> str:

@@ -31,19 +31,6 @@ WHISPER_MODEL = _get("WHISPER_MODEL", "base")
 MAX_CHUNK_OUTPUT_TOKENS = int(_get("MAX_CHUNK_OUTPUT_TOKENS", "6000"))
 MAX_FUSION_OUTPUT_TOKENS = int(_get("MAX_FUSION_OUTPUT_TOKENS", "32000"))
 
-MODEL_LIMITS = {
-    "meta-llama/llama-3.3-70b-instruct": 128000,
-    "meta-llama/llama-3.1-70b-instruct": 128000,
-    "meta-llama/llama-3.1-8b-instruct": 128000,
-    "mistralai/mistral-large": 32000,
-    "mistralai/mistral-small": 32000,
-    "mistralai/mistral-medium": 32000,
-    "anthropic/claude-3.5-sonnet": 200000,
-    "anthropic/claude-3-opus": 200000,
-    "google/gemini-2.0-flash-exp": 1000000,
-    "openai/gpt-4o-mini": 128000,
-}
-
 MODEL_CONTEXTS = {
     # ── Gratuits (suffixe :free) ──────────────────────────────
     "meta-llama/llama-3.1-8b-instruct:free": 128000,

@@ -1,6 +1,8 @@
 """Multi-Platform Transcript Extractor"""
 
+import os
 import re
+import subprocess
 import time
 import requests
 from typing import Optional
@@ -15,14 +17,17 @@ PLATFORMS = {
     'youtube': {
         'domains': ['youtube.com', 'youtu.be', 'youtube-nocookie.com'],
         'icon': '📺',
+        'name': 'YouTube',
     },
     'twitch': {
         'domains': ['twitch.tv', 'clips.twitch.tv'],
         'icon': '🟣',
+        'name': 'Twitch',
     },
     'vimeo': {
         'domains': ['vimeo.com'],
         'icon': '🎬',
+        'name': 'Vimeo',
     },
 }
 
@@ -98,12 +103,6 @@ def get_youtube_transcript(url: str, languages: list = None) -> dict:
             "Colle l'URL d'une vidéo spécifique (ex: youtube.com/watch?v=...)"
         )
 
-    if re.search(r'youtube\.com/(playlist|feed)', url):
-        raise ValueError(
-            "Cette URL est une playlist YouTube, pas une vidéo.\n"
-            "Colle l'URL d'une vidéo spécifique (ex: youtube.com/watch?v=...)"
-        )
-
     video_id = extract_youtube_id(url)
     if not video_id:
         raise ValueError("URL YouTube invalide. Format attendu : youtube.com/watch?v=VIDEOID ou youtu.be/VIDEOID")
@@ -120,7 +119,7 @@ def get_youtube_transcript(url: str, languages: list = None) -> dict:
                 transcript_data = list(transcript)
                 original_lang = lang
                 break
-            except:
+            except Exception:
                 continue
         
         if not transcript_data:
@@ -176,13 +175,20 @@ def get_youtube_transcript(url: str, languages: list = None) -> dict:
                         'start': entry.start,
                         'duration': entry.duration,
                     })
+                if formatted_transcript:
+                    last_entry = formatted_transcript[-1]
+                    total_duration = last_entry['start'] + last_entry['duration']
+                else:
+                    total_duration = 0
                 return {
                     'video_id': video_id,
                     'transcript': formatted_transcript,
                     'language': 'unknown',
-                    'title': get_video_title(video_id)
+                    'title': get_video_title(video_id),
+                    'total_duration_minutes': total_duration / 60,
+                    'entries_count': len(formatted_transcript),
                 }
-            except:
+            except Exception:
                 pass
         raise ValueError(f"Erreur YouTube 403: vidéo peut-être restreinte. Détail: {str(e)}")
     except Exception as e:
@@ -451,11 +457,8 @@ def validate_url(url: str) -> tuple:
             "Colle l'URL d'une vidéo spécifique (ex: youtube.com/watch?v=...)"
         )
 
-    if re.search(r'youtube\.com/(playlist|feed)', url_clean):
-        return False, (
-            "Cette URL est une playlist YouTube, pas une vidéo.\n"
-            "Colle l'URL d'une vidéo spécifique (ex: youtube.com/watch?v=...)"
-        )
+    if re.search(r'youtube\.com/(playlist|feed)', url_clean) or detect_playlist(url_clean):
+        return True, "📋 Playlist YouTube"
 
     platform = detect_platform(url_clean)
 
@@ -463,12 +466,15 @@ def validate_url(url: str) -> tuple:
         return False, (
             "URL non supportée. Formats acceptés:\n"
             "• YouTube: youtube.com/watch?v=..., youtu.be/...\n"
+            "• YouTube Playlist: youtube.com/playlist?list=...\n"
             "• Twitch: twitch.tv/videos/... (VOD uniquement)\n"
             "• Vimeo: vimeo.com/..."
         )
 
-    icon = PLATFORMS.get(platform, {}).get('icon', '🔗')
-    return True, f"{icon} {platform.capitalize()}"
+    info = PLATFORMS.get(platform, {})
+    icon = info.get('icon', '🔗')
+    name = info.get('name', platform.capitalize())
+    return True, f"{icon} {name}"
 
 def get_supported_platforms() -> list:
     """Get list of supported platforms."""
@@ -477,3 +483,87 @@ def get_supported_platforms() -> list:
         {"id": "twitch", "name": "Twitch", "icon": "🟣", "description": "VODs avec sous-titres"},
         {"id": "vimeo", "name": "Vimeo", "icon": "🎬", "description": "Vidéos avec sous-titres"},
     ]
+
+
+def detect_playlist(url: str) -> bool:
+    """Detect if a URL is a YouTube playlist."""
+    patterns = [
+        r'youtube\.com/playlist\?list=([a-zA-Z0-9_-]+)',
+        r'youtube\.com/watch\?.*list=([a-zA-Z0-9_-]+)',
+        r'youtu\.be/.*[?&]list=([a-zA-Z0-9_-]+)',
+    ]
+    for pattern in patterns:
+        if re.search(pattern, url):
+            return True
+    return False
+
+
+def extract_playlist_id(url: str) -> Optional[str]:
+    """Extract YouTube playlist ID from URL."""
+    patterns = [
+        r'youtube\.com/playlist\?list=([a-zA-Z0-9_-]+)',
+        r'[?&]list=([a-zA-Z0-9_-]+)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    return None
+
+
+def get_playlist_videos(url: str, cookies_path: Optional[str] = None) -> list[dict]:
+    """Get video URLs and titles from a YouTube playlist using yt-dlp."""
+    yt_dlp_bin = _find_yt_dlp()
+    if not yt_dlp_bin:
+        raise ValueError(
+            "yt-dlp non installé.\n"
+            "Installez-le avec: pip install yt-dlp"
+        )
+
+    cmd = [yt_dlp_bin, "--flat-playlist", "--print", "%(url)s\t%(title)s", url]
+    if cookies_path and os.path.isfile(cookies_path):
+        cmd += ["--cookies", cookies_path]
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+    if result.returncode != 0:
+        stderr = result.stderr[-500:] if result.stderr else "Erreur inconnue"
+        raise ValueError(f"Erreur playlist yt-dlp:\n{stderr}")
+
+    videos = []
+    for line in result.stdout.strip().split('\n'):
+        line = line.strip()
+        if not line or '\t' not in line:
+            continue
+        video_url, video_title = line.split('\t', 1)
+        if video_url:
+            videos.append({
+                'url': video_url,
+                'title': video_title.strip(),
+            })
+
+    if not videos:
+        raise ValueError("Aucune vidéo trouvée dans cette playlist")
+
+    return videos
+
+
+def _find_yt_dlp() -> Optional[str]:
+    """Return path to yt-dlp binary."""
+    import shutil
+
+    if (path := shutil.which("yt-dlp")):
+        return path
+
+    candidates = [
+        os.path.expanduser("~/Library/Python/3.9/bin/yt-dlp"),
+        os.path.expanduser("~/Library/Python/3.10/bin/yt-dlp"),
+        os.path.expanduser("~/Library/Python/3.11/bin/yt-dlp"),
+        os.path.expanduser("~/.local/bin/yt-dlp"),
+        "/usr/local/bin/yt-dlp",
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+
+    return None

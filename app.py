@@ -5,15 +5,26 @@ Supports: YouTube, Twitch, Vimeo (transcript), any platform via Whisper, local a
 
 from __future__ import annotations
 
+import atexit
+import os
+import queue
+import re
+import shutil
+import tempfile
+import threading
+import time
+from datetime import datetime
+
 import streamlit as st
 import config
 from src import extractor, chunker, analyzer, fusion
 from src.models import fetch_free_models, fetch_all_models
-import time
-import tempfile
-import os
-from datetime import datetime
+from src.image_generator import generate_image, get_providers_list, get_styles_list, build_image_prompt
 
+
+# ──────────────────────────────────────────────────────────────
+# Model caches
+# ──────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _cached_free_models() -> dict:
@@ -25,15 +36,30 @@ def _cached_all_models() -> dict:
     return fetch_all_models()
 
 
+# ──────────────────────────────────────────────────────────────
+# Transcript cache (avoids re-fetching the same URL)
+# ──────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _cached_transcript(url: str) -> dict | None:
+    """Fetch and cache native transcript for 30 min. Returns None on failure."""
+    try:
+        return extractor.get_transcript(url)
+    except Exception:
+        return None
+
+
+# ──────────────────────────────────────────────────────────────
+# Cookies helpers
+# ──────────────────────────────────────────────────────────────
+
 @st.cache_resource(show_spinner=False)
 def _server_cookies_path() -> str | None:
     """Return path to cookies file: local file takes priority, then YOUTUBE_COOKIES env/secret."""
-    # 1. Local file (avoids TOML parser limitations with large values)
     local = os.path.join(os.path.dirname(__file__), ".streamlit", "youtube_cookies.txt")
     if os.path.isfile(local):
         return local
 
-    # 2. YOUTUBE_COOKIES env var / Streamlit secret (fallback for cloud deployments)
     content = config.YOUTUBE_COOKIES
     if not content or not content.strip():
         return None
@@ -41,6 +67,8 @@ def _server_cookies_path() -> str | None:
     tmp.write(content)
     tmp.flush()
     tmp.close()
+    # Clean up on process exit so temp files don't accumulate
+    atexit.register(lambda p=tmp.name: os.path.exists(p) and os.unlink(p))
     return tmp.name
 
 
@@ -54,12 +82,6 @@ def resolve_cookies_path(user_upload) -> str | None:
         return tmp.name
     return _server_cookies_path()
 
-st.set_page_config(
-    page_title="YouTube Summarizer",
-    page_icon="📺",
-    layout="wide",
-)
-
 
 # ──────────────────────────────────────────────────────────────
 # Password protection
@@ -67,22 +89,13 @@ st.set_page_config(
 
 def check_password() -> bool:
     """Show login screen if APP_PASSWORD is set. Returns True when access is granted."""
-    # Read directly from st.secrets so a broken TOML triggers a clear error
-    # instead of silently granting open access.
     try:
         app_password = st.secrets.get("APP_PASSWORD", "") or os.getenv("APP_PASSWORD", "")
     except Exception:
         app_password = os.getenv("APP_PASSWORD", "")
-        if not app_password:
-            st.error(
-                "⚠️ Impossible de lire les secrets Streamlit (format TOML invalide). "
-                "Vérifiez Settings → Secrets et utilisez des triple-guillemets `\"\"\"` "
-                "pour les valeurs multilignes comme YOUTUBE_COOKIES."
-            )
-            return False
 
     if not app_password:
-        return True  # No password configured → open access
+        return True
 
     if st.session_state.get("authenticated"):
         return True
@@ -118,9 +131,20 @@ def init_session_state():
     defaults = {
         "analysis_result": None,
         "current_title": "",
+        "current_transcript": "",
         "is_processing": False,
         "history": [],
         "authenticated": False,
+        "chat_history": [],
+        "generated_image_url": "",
+        "generated_image_provider": "",
+        "generated_image_prompt": "",
+        # Background thread state
+        "_thread_progress": 0,
+        "_thread_status": "",
+        "_result_queue": None,
+        "_cancel_event": None,
+        "_processing_source": "",
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -133,88 +157,122 @@ def active_api_key() -> str:
 
 
 # ──────────────────────────────────────────────────────────────
-# Pipeline
+# Pipeline (no direct Streamlit calls — uses on_progress callback)
 # ──────────────────────────────────────────────────────────────
 
-def run_pipeline(transcript: list, video_title: str, model: str, chunk_size: int, overlap: int, output_language: str = "Français") -> str:
-    """Chunk → Analyze → Fuse."""
+def run_pipeline(
+    transcript: list,
+    video_title: str,
+    model: str,
+    chunk_size: int,
+    overlap: int,
+    output_language: str = "Français",
+    on_progress=None,
+    cancel_event=None,
+) -> str:
+    """Chunk → Analyze → Fuse. Reports progress via on_progress(pct: int, msg: str)."""
     api_key = active_api_key()
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-
-    # Build fallback list from free models (excluding the selected one)
     free_models = list(_cached_free_models().keys())
     fallbacks = [m for m in free_models if m != model]
 
-    try:
-        status_text.text("✂️ Découpage en chunks...")
-        chunks = chunker.chunk_transcript(transcript, max_tokens=chunk_size, overlap_tokens=overlap, model=model)
-        status_text.text(chunker.get_chunk_count_info(chunks))
-        progress_bar.progress(20)
+    def _progress(pct: int, msg: str):
+        if on_progress:
+            on_progress(pct, msg)
 
-        analyses = []
-        for i, chunk in enumerate(chunks):
-            status_text.text(f"🤖 Analyse chunk {i + 1}/{len(chunks)}...")
-            progress_bar.progress(20 + 70 * (i + 1) // len(chunks))
-            analyses.append(analyzer.analyze_chunk(
-                chunk["text"], video_title, model=model, api_key=api_key,
-                output_language=output_language, fallback_models=fallbacks,
-            ))
-            if len(chunks) > 1:
-                time.sleep(1)
+    def _check_cancel():
+        if cancel_event and cancel_event.is_set():
+            raise InterruptedError("Analyse annulée par l'utilisateur")
 
-        final_analysis = analyses[0]
-        if len(analyses) > 1:
-            status_text.text("🔗 Fusion des analyses...")
-            progress_bar.progress(95)
-            final_analysis = fusion.fusion_analyses(
-                analyses, video_title, model, api_key=api_key,
-                output_language=output_language, fallback_models=fallbacks,
-            )
+    _progress(0, "✂️ Découpage en chunks...")
+    chunks = chunker.chunk_transcript(transcript, max_tokens=chunk_size, overlap_tokens=overlap, model=model)
+    chunk_info = chunker.get_chunk_count_info(chunks)
+    _progress(20, f"📊 {chunk_info}")
+    # Brief pause so the user can read the chunk info before LLM calls start
+    time.sleep(0.8)
 
-        progress_bar.progress(100)
-        status_text.text("✅ Terminé !")
-        return final_analysis
+    analyses = []
+    for i, chunk in enumerate(chunks):
+        _check_cancel()
+        _progress(20 + 70 * (i + 1) // len(chunks), f"🤖 Analyse chunk {i + 1}/{len(chunks)}...")
+        analyses.append(analyzer.analyze_chunk(
+            chunk["text"], video_title, model=model, api_key=api_key,
+            output_language=output_language, fallback_models=fallbacks,
+        ))
+        if len(chunks) > 1:
+            time.sleep(1)
 
-    except Exception as e:
-        progress_bar.progress(0)
-        status_text.text(f"❌ Erreur : {e}")
-        raise
+    _check_cancel()
+    final_analysis = analyses[0]
+    if len(analyses) > 1:
+        _progress(95, "🔗 Fusion des analyses...")
+        final_analysis = fusion.fusion_analyses(
+            analyses, video_title, model, api_key=api_key,
+            output_language=output_language, fallback_models=fallbacks,
+        )
+
+    _progress(100, "✅ Terminé !")
+    return final_analysis
+
+
+def _transcript_to_text(transcript_entries: list) -> str:
+    """Convert transcript entries (list of {text, start, duration}) to plain text with timestamps."""
+    lines = []
+    for entry in transcript_entries:
+        start = entry.get("start", 0)
+        minutes = int(start // 60)
+        seconds = int(start % 60)
+        timestamp = f"[{minutes}:{seconds:02d}]"
+        lines.append(f"{timestamp} {entry.get('text', '')}")
+    return "\n".join(lines)
 
 
 def process_url(
-    url: str, model: str, chunk_size: int, overlap: int,
-    force_whisper: bool, whisper_lang: str, whisper_model: str,
-    output_language: str = "Français", cookies_path: str = None,
-) -> tuple[str, str]:
-    """Fetch transcript (or Whisper fallback) then run pipeline."""
-    progress_bar = st.progress(0)
-    status_text = st.empty()
+    url: str,
+    model: str,
+    chunk_size: int,
+    overlap: int,
+    force_whisper: bool,
+    whisper_lang: str,
+    whisper_model: str,
+    output_language: str = "Français",
+    cookies_path: str = None,
+    on_progress=None,
+    cancel_event=None,
+) -> tuple[str, str, list, str]:
+    """Fetch transcript (or Whisper fallback) then run pipeline. Returns (result, title, warnings, transcript_text)."""
+    warnings: list[str] = []
+
+    def _progress(pct: int, msg: str):
+        if on_progress:
+            on_progress(pct, msg)
+
+    def _check_cancel():
+        if cancel_event and cancel_event.is_set():
+            raise InterruptedError("Analyse annulée par l'utilisateur")
+
     transcript_data = None
 
     if not force_whisper:
-        try:
-            status_text.text("📥 Extraction du transcript...")
-            progress_bar.progress(10)
-            transcript_data = extractor.get_transcript(url)
-            if not transcript_data.get("transcript"):
-                warning = transcript_data.get("warning", "Aucun transcript disponible")
-                st.warning(f"⚠️ {warning} — passage en mode Whisper...")
-                transcript_data = None
-        except Exception as e:
-            st.warning(f"⚠️ Transcript indisponible ({e}) — passage en mode Whisper...")
+        _progress(5, "📥 Extraction du transcript...")
+        data = _cached_transcript(url)
+        if data and data.get("transcript"):
+            transcript_data = data
+        elif data:
+            warnings.append(f"⚠️ {data.get('warning', 'Aucun transcript disponible')} — passage en mode Whisper...")
+        else:
+            warnings.append("⚠️ Transcript indisponible — passage en mode Whisper...")
+
+    _check_cancel()
 
     if transcript_data is None:
         from src.whisper_transcriber import transcribe_url
-        status_text.text("🎙️ Téléchargement audio + transcription Whisper...")
-        progress_bar.progress(10)
+        _progress(10, "🎙️ Téléchargement audio + transcription Whisper...")
         transcript_data = transcribe_url(
             url,
             language=whisper_lang if whisper_lang != "auto" else None,
             model_size=whisper_model,
             cookies_path=cookies_path,
         )
-        progress_bar.progress(28)
 
     transcript = transcript_data["transcript"]
     title = transcript_data.get("title", "Video")
@@ -222,26 +280,48 @@ def process_url(
     method = transcript_data.get("method", "transcript")
     method_label = "Whisper" if "whisper" in method else "transcript"
 
-    status_text.text(f"📺 {title} — {duration:.1f} min — {len(transcript)} segments ({method_label})")
-    progress_bar.progress(30)
-    time.sleep(0.4)
+    _progress(30, f"📺 {title} — {duration:.1f} min — {len(transcript)} segments ({method_label})")
+    _check_cancel()
 
-    result = run_pipeline(transcript, title, model, chunk_size, overlap, output_language=output_language)
-    return result, title
+    def _pipeline_progress(pct: int, msg: str):
+        on_progress(30 + int(pct * 0.70), msg)
+
+    result = run_pipeline(
+        transcript, title, model, chunk_size, overlap,
+        output_language=output_language,
+        on_progress=_pipeline_progress if on_progress else None,
+        cancel_event=cancel_event,
+    )
+    transcript_text = _transcript_to_text(transcript)
+    return result, title, warnings, transcript_text
 
 
 def process_local_file(
-    file_bytes: bytes, filename: str, model: str, chunk_size: int, overlap: int,
-    whisper_lang: str, whisper_model: str, output_language: str = "Français",
-) -> tuple[str, str]:
-    """Transcribe local audio/video file then run pipeline."""
+    file_bytes: bytes,
+    filename: str,
+    model: str,
+    chunk_size: int,
+    overlap: int,
+    whisper_lang: str,
+    whisper_model: str,
+    output_language: str = "Français",
+    on_progress=None,
+    cancel_event=None,
+) -> tuple[str, str, list, str]:
+    """Transcribe local audio/video file then run pipeline. Returns (result, title, warnings, transcript_text)."""
     from src.whisper_transcriber import transcribe_local_file
 
-    progress_bar = st.progress(0)
-    status_text = st.empty()
+    warnings: list[str] = []
 
-    status_text.text(f"🎙️ Transcription de {filename} avec Whisper...")
-    progress_bar.progress(10)
+    def _progress(pct: int, msg: str):
+        if on_progress:
+            on_progress(pct, msg)
+
+    def _check_cancel():
+        if cancel_event and cancel_event.is_set():
+            raise InterruptedError("Analyse annulée par l'utilisateur")
+
+    _progress(5, f"🎙️ Transcription de {filename} avec Whisper...")
 
     transcript_data = transcribe_local_file(
         file_bytes, filename,
@@ -253,12 +333,158 @@ def process_local_file(
     title = transcript_data.get("title", filename)
     duration = transcript_data.get("total_duration_minutes", 0)
 
-    status_text.text(f"✅ {title} — {duration:.1f} min — {len(transcript)} segments")
-    progress_bar.progress(30)
-    time.sleep(0.4)
+    _progress(30, f"✅ {title} — {duration:.1f} min — {len(transcript)} segments")
+    _check_cancel()
 
-    result = run_pipeline(transcript, title, model, chunk_size, overlap, output_language=output_language)
-    return result, title
+    def _pipeline_progress(pct: int, msg: str):
+        on_progress(30 + int(pct * 0.70), msg)
+
+    result = run_pipeline(
+        transcript, title, model, chunk_size, overlap,
+        output_language=output_language,
+        on_progress=_pipeline_progress if on_progress else None,
+        cancel_event=cancel_event,
+    )
+    transcript_text = _transcript_to_text(transcript)
+    return result, title, warnings, transcript_text
+
+
+def process_playlist(
+    url: str,
+    model: str,
+    chunk_size: int,
+    overlap: int,
+    force_whisper: bool,
+    whisper_lang: str,
+    whisper_model: str,
+    output_language: str = "Français",
+    cookies_path: str = None,
+    on_progress=None,
+    cancel_event=None,
+) -> tuple[str, str, list, str]:
+    """Process all videos in a YouTube playlist. Returns combined result."""
+    warnings: list[str] = []
+    all_results = []
+    playlist_title = "Playlist"
+
+    def _progress(pct: int, msg: str):
+        if on_progress:
+            on_progress(pct, msg)
+
+    def _check_cancel():
+        if cancel_event and cancel_event.is_set():
+            raise InterruptedError("Analyse annulée par l'utilisateur")
+
+    _progress(2, "📋 Récupération des vidéos de la playlist...")
+    videos = extractor.get_playlist_videos(url, cookies_path=cookies_path)
+    total = len(videos)
+    playlist_id = extractor.extract_playlist_id(url)
+    if playlist_id:
+        try:
+            import subprocess
+            yt_bin = shutil.which("yt-dlp") or "yt-dlp"
+            result = subprocess.run(
+                [yt_bin, "--print", "%(playlist_title)s", "--flat-playlist", url],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                playlist_title = result.stdout.strip()
+        except Exception:
+            pass
+
+    _progress(5, f"📋 Playlist : {playlist_title} — {total} vidéos trouvées")
+
+    for idx, video in enumerate(videos):
+        _check_cancel()
+        video_url = video['url']
+        video_title = video['title']
+        progress_start = 5 + (85 * idx // total)
+        progress_end = 5 + (85 * (idx + 1) // total)
+
+        def _video_progress(pct: int, msg: str):
+            video_pct = progress_start + int((progress_end - progress_start) * pct / 100)
+            _progress(video_pct, f"[{idx+1}/{total}] {msg}")
+
+        _progress(progress_start, f"[{idx+1}/{total}] 📥 Analyse de : {video_title}")
+        try:
+            result, title, w, _ = process_url(
+                video_url, model, chunk_size, overlap,
+                force_whisper, whisper_lang, whisper_model,
+                output_language, cookies_path,
+                on_progress=_video_progress,
+                cancel_event=cancel_event,
+            )
+            all_results.append(f"## 📺 Vidéo {idx+1} : {title}\n\n{result}\n\n---\n")
+            for warn in w:
+                warnings.append(f"[{video_title}] {warn}")
+        except InterruptedError:
+            raise
+        except Exception as e:
+            error_msg = f"[{video_title}] Erreur : {str(e)}"
+            warnings.append(error_msg)
+            all_results.append(f"## 📺 Vidéo {idx+1} : {video_title}\n\n⚠️ {error_msg}\n\n---\n")
+
+    _check_cancel()
+    _progress(92, "🔗 Génération du rapport consolidé...")
+
+    summary_header = f"# 📋 Rapport de la playlist : {playlist_title}\n"
+    summary_header += f"**{total} vidéos analysées**\n\n---\n\n"
+    combined = summary_header + "\n".join(all_results)
+
+    _progress(95, "🤖 Génération du résumé global de la playlist...")
+    try:
+        playlist_summary_prompt = (
+            f"Voici les analyses de {total} vidéos d'une playlist intitulée '{playlist_title}'.\n\n"
+            f"{' '.join(all_results[:3])}"  # Send first 3 analyses as context
+            f"\n\nGénère un résumé global de cette playlist en 3-5 phrases."
+        )
+        playlist_summary = analyzer.call_llm(
+            playlist_summary_prompt, model=model, max_tokens=2000,
+            api_key=active_api_key(),
+            fallback_models=[m for m in list(_cached_free_models().keys()) if m != model],
+        )
+        combined = f"# 📋 Rapport de la playlist : {playlist_title}\n\n"
+        combined += f"**{total} vidéos analysées**\n\n"
+        combined += f"## 🌟 Résumé global\n\n{playlist_summary}\n\n---\n\n"
+        combined += "\n".join(all_results)
+    except Exception:
+        pass
+
+    _progress(100, "✅ Playlist terminée !")
+    return combined, playlist_title, warnings, ""
+
+
+# ──────────────────────────────────────────────────────────────
+# Background thread helpers
+# ──────────────────────────────────────────────────────────────
+
+def _start_analysis_thread(source: str, fn, *args, **kwargs):
+    """Run fn(*args, **kwargs) in a daemon thread. fn must return (result, title, warnings)."""
+    cancel_ev = threading.Event()
+    result_q: queue.Queue = queue.Queue()
+
+    def _on_progress(pct: int, msg: str):
+        # Writing simple values to session_state from a thread is safe in CPython (GIL)
+        st.session_state._thread_progress = min(pct, 100)
+        st.session_state._thread_status = msg
+
+    def _body():
+        try:
+            result, title, w, transcript_text = fn(*args, on_progress=_on_progress, cancel_event=cancel_ev, **kwargs)
+            result_q.put(("ok", result, title, w, transcript_text))
+        except InterruptedError:
+            result_q.put(("cancelled", "", "", "", []))
+        except Exception as e:
+            result_q.put(("error", str(e), "", "", ""))
+
+    st.session_state._cancel_event = cancel_ev
+    st.session_state._result_queue = result_q
+    st.session_state._processing_source = source
+    st.session_state._thread_progress = 0
+    st.session_state._thread_status = "Démarrage..."
+    st.session_state.is_processing = True
+
+    threading.Thread(target=_body, daemon=True).start()
 
 
 # ──────────────────────────────────────────────────────────────
@@ -271,6 +497,102 @@ def add_to_history(title: str, source: str, result: str):
         "result": result, "timestamp": datetime.now().strftime("%H:%M:%S"),
     })
     st.session_state.history = st.session_state.history[:10]
+
+
+# ──────────────────────────────────────────────────────────────
+# Chat / Q&A
+# ──────────────────────────────────────────────────────────────
+
+QA_PROMPT_TEMPLATE = """Tu es un assistant spécialisé dans l'analyse de contenu vidéo.
+Voici le transcript complet d'une vidéo :
+
+{transcript}
+
+Réponds à la question suivante en te basant UNIQUEMENT sur le transcript ci-dessus.
+Si la réponse ne se trouve pas dans le transcript, dis-le clairement.
+Utilise des timestamps [min:sec] quand tu cites des passages précis.
+
+Question : {question}"""
+
+
+def run_qa(question: str, transcript_text: str) -> str:
+    """Answer a question about the video using the transcript as context."""
+    api_key = active_api_key()
+    model = st.session_state.get("selected_model", config.DEFAULT_MODEL)
+    free_models = list(_cached_free_models().keys())
+    fallbacks = [m for m in free_models if m != model]
+
+    prompt = QA_PROMPT_TEMPLATE.format(transcript=transcript_text, question=question)
+
+    if len(prompt) > 120000:
+        prompt = prompt[:60000] + "\n...[transcript tronqué]...\n" + prompt[-60000:]
+
+    return analyzer.call_llm(
+        prompt, model=model, max_tokens=3000,
+        api_key=api_key, fallback_models=fallbacks,
+    )
+
+
+# ──────────────────────────────────────────────────────────────
+# Image generation
+# ──────────────────────────────────────────────────────────────
+
+def render_image_generation(result: str, title: str):
+    """Render image generation UI after analysis."""
+    with st.expander("🎨 Générer une image à partir du résumé", expanded=False):
+        st.markdown("Générez une illustration basée sur le contenu de la vidéo.")
+
+        providers = get_providers_list()
+        provider_options = {f"{p['icon']} {p['name']}": p['id'] for p in providers}
+        selected_provider_label = st.selectbox(
+            "Provider d'image",
+            options=list(provider_options.keys()),
+            index=0,
+            key="img_provider",
+        )
+        selected_provider = provider_options[selected_provider_label]
+
+        styles = get_styles_list()
+        style_options = {s['name']: s['id'] for s in styles}
+        selected_style_label = st.selectbox(
+            "Style d'image",
+            options=list(style_options.keys()),
+            index=0,
+            key="img_style",
+        )
+        selected_style = style_options[selected_style_label]
+
+        col_gen, col_dl = st.columns([1, 1])
+        with col_gen:
+            generate_btn = st.button("🚀 Générer l'image", type="primary", key="btn_gen_img")
+        with col_dl:
+            if st.session_state.generated_image_url:
+                st.markdown(
+                    f"[🌐 Ouvrir l'image dans un nouvel onglet]({st.session_state.generated_image_url})",
+                    unsafe_allow_html=True,
+                )
+
+        if generate_btn:
+            with st.spinner("🎨 Génération de l'image..."):
+                image_prompt = build_image_prompt(result, title, style=selected_style)
+                img_result = generate_image(
+                    prompt=image_prompt,
+                    provider=selected_provider,
+                    api_key=active_api_key(),
+                )
+
+            if img_result.get('success'):
+                st.session_state.generated_image_url = img_result['image_url']
+                st.session_state.generated_image_provider = selected_provider
+                st.session_state.generated_image_prompt = img_result.get('revised_prompt', image_prompt)
+                st.image(img_result['image_url'], caption=img_result.get('revised_prompt', image_prompt), use_container_width=True)
+            else:
+                st.error(f"❌ {img_result.get('error', 'Erreur inconnue')}")
+
+        if st.session_state.generated_image_url and not generate_btn:
+            st.image(st.session_state.generated_image_url,
+                     caption=st.session_state.generated_image_prompt,
+                     use_container_width=True)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -304,12 +626,110 @@ def show_result(result: str, title: str):
 
     st.markdown(result)
 
+    # ── Chat / Q&A section ────────────────────────────────────
+    transcript = st.session_state.get("current_transcript", "")
+    if transcript:
+        st.markdown("---")
+        st.markdown("### 💬 Poser une question sur la vidéo")
+        st.caption("Posez n'importe quelle question sur le contenu de la vidéo. L'IA répondra en se basant sur le transcript.")
+
+        for qa in st.session_state.chat_history:
+            st.markdown(f"**🧑 Vous :** {qa['question']}")
+            st.markdown(f"**🤖 Assistant :** {qa['answer']}")
+            st.markdown("---")
+
+        with st.form("qa_form", clear_on_submit=True):
+            question = st.text_input("Votre question", placeholder="Par exemple : Quel est le sujet principal de la vidéo ?", key="qa_input")
+            submitted = st.form_submit_button("💬 Demander", type="primary")
+            if submitted and question.strip():
+                with st.spinner("🤖 Réflexion..."):
+                    try:
+                        answer = run_qa(question.strip(), transcript)
+                        st.session_state.chat_history.append({
+                            "question": question.strip(),
+                            "answer": answer,
+                        })
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ {str(e)}")
+
+        if st.session_state.chat_history:
+            if st.button("🗑️ Effacer l'historique", key="clear_chat"):
+                st.session_state.chat_history = []
+                st.rerun()
+
+    # ── Image generation section ──────────────────────────────
+    render_image_generation(result, title)
+
+
+# ──────────────────────────────────────────────────────────────
+# Processing UI — polling loop (replaces tabs while a thread runs)
+# ──────────────────────────────────────────────────────────────
+
+def render_processing_ui():
+    """Show progress bar + cancel button. Poll the result queue and rerun until done."""
+    st.markdown("---")
+    prog = st.session_state._thread_progress
+    msg = st.session_state._thread_status
+
+    st.progress(prog / 100)
+    st.caption(msg)
+
+    if st.button("🛑 Annuler l'analyse", type="secondary"):
+        cancel_ev = st.session_state._cancel_event
+        if cancel_ev:
+            cancel_ev.set()
+        st.session_state._thread_status = "⏳ Annulation en cours (fin de la requête courante)..."
+
+    q: queue.Queue | None = st.session_state._result_queue
+    if q is not None:
+        try:
+            data = q.get_nowait()
+            status = data[0]
+
+            st.session_state.is_processing = False
+            st.session_state._thread_progress = 0
+            st.session_state._thread_status = ""
+
+            if status == "ok":
+                _, result, title, warnings, transcript_text = data
+                for w in warnings:
+                    st.warning(w)
+                st.session_state.analysis_result = result
+                st.session_state.current_title = title
+                st.session_state.current_transcript = transcript_text
+                st.session_state.chat_history = []
+                st.session_state.generated_image_url = ""
+                add_to_history(title, st.session_state._processing_source, result)
+            elif status == "cancelled":
+                st.info("ℹ️ Analyse annulée.")
+                st.session_state.analysis_result = None
+            else:
+                _, error_msg, _, _, _ = data
+                st.error(f"❌ {error_msg}")
+                st.session_state.analysis_result = None
+
+            st.rerun()
+            return
+        except queue.Empty:
+            pass
+
+    # Still running — poll again in 300 ms
+    time.sleep(0.3)
+    st.rerun()
+
 
 # ──────────────────────────────────────────────────────────────
 # Main
 # ──────────────────────────────────────────────────────────────
 
 def main():
+    st.set_page_config(
+        page_title="YouTube Summarizer",
+        page_icon="📺",
+        layout="wide",
+    )
+
     init_session_state()
 
     if not check_password():
@@ -321,7 +741,6 @@ def main():
     # ── Sidebar ──────────────────────────────────────────────
     st.sidebar.header("⚙️ Configuration")
 
-    # Custom OpenRouter API key
     st.sidebar.markdown("### 🔑 Clé API OpenRouter")
     custom_key = st.sidebar.text_input(
         "Votre clé OpenRouter (optionnel)",
@@ -353,11 +772,11 @@ def main():
         st.sidebar.caption(f"✅ {len(model_map)} modèles **gratuits** disponibles")
 
     available_models = sorted(model_map.keys())
-    # Prefer llama-3.3-70b:free as default when present
     default_model = config.DEFAULT_MODEL
     default_idx = available_models.index(default_model) if default_model in available_models else 0
 
     selected_model = st.sidebar.selectbox("Modèle LLM", options=available_models, index=default_idx)
+    st.session_state["selected_model"] = selected_model
 
     ctx_limit = model_map.get(selected_model, config.get_model_context_limit(selected_model))
     chunk_size = st.sidebar.number_input(
@@ -433,7 +852,6 @@ def main():
     free_tag = " 🆓" if selected_model.endswith(":free") else ""
     st.sidebar.markdown(f"**Contexte :** {ctx_limit:,} tokens{free_tag}")
 
-    # History
     if st.session_state.history:
         st.sidebar.markdown("---")
         st.sidebar.markdown("### 📚 Historique")
@@ -445,6 +863,11 @@ def main():
                     st.session_state.analysis_result = entry["result"]
                     st.session_state.current_title = entry["title"]
                     st.rerun()
+
+    # ── Processing UI (shown while background thread runs) ───
+    if st.session_state.is_processing:
+        render_processing_ui()
+        return  # unreachable — render_processing_ui always calls st.rerun()
 
     # ── Tabs ─────────────────────────────────────────────────
     tab_url, tab_local = st.tabs(["🔗 URL Vidéo", "📁 Fichier Local"])
@@ -461,10 +884,7 @@ def main():
         with col_btn:
             st.write("")
             st.write("")
-            analyze_url_btn = st.button(
-                "🚀 Analyser", type="primary", key="btn_url",
-                disabled=st.session_state.is_processing,
-            )
+            analyze_url_btn = st.button("🚀 Analyser", type="primary", key="btn_url")
 
         platforms = extractor.get_supported_platforms()
         native_str = " · ".join(f"{p['icon']} {p['name']}" for p in platforms)
@@ -476,6 +896,16 @@ def main():
         if analyze_url_btn and url_input:
             if not key_in_use:
                 st.error("⚠️ Entrez votre clé OpenRouter dans la barre latérale.")
+            elif extractor.detect_playlist(url_input):
+                _start_analysis_thread(
+                    url_input,
+                    process_playlist,
+                    url_input, selected_model, chunk_size, overlap,
+                    force_whisper, whisper_lang, whisper_model_size,
+                    output_language, cookies_path,
+                )
+                st.info("📋 Playlist détectée — analyse de toutes les vidéos...")
+                st.rerun()
             else:
                 is_valid, _ = extractor.validate_url(url_input)
                 need_whisper = force_whisper or not is_valid
@@ -483,23 +913,14 @@ def main():
                 if not is_valid and not force_whisper:
                     st.info("Plateforme non reconnue pour le transcript natif — tentative via Whisper + yt-dlp...")
 
-                st.session_state.is_processing = True
-                try:
-                    result, title = process_url(
-                        url_input, selected_model, chunk_size, overlap,
-                        force_whisper=need_whisper,
-                        whisper_lang=whisper_lang, whisper_model=whisper_model_size,
-                        output_language=output_language,
-                        cookies_path=cookies_path,
-                    )
-                    st.session_state.analysis_result = result
-                    st.session_state.current_title = title
-                    add_to_history(title, url_input, result)
-                except Exception as e:
-                    st.error(f"❌ {e}")
-                    st.session_state.analysis_result = None
-                finally:
-                    st.session_state.is_processing = False
+                _start_analysis_thread(
+                    url_input,
+                    process_url,
+                    url_input, selected_model, chunk_size, overlap,
+                    need_whisper, whisper_lang, whisper_model_size,
+                    output_language, cookies_path,
+                )
+                st.rerun()
 
     # ── Tab 2 : Local File ───────────────────────────────────
     with tab_local:
@@ -516,29 +937,23 @@ def main():
 
         analyze_local_btn = st.button(
             "🚀 Transcrire & Analyser", type="primary", key="btn_local",
-            disabled=st.session_state.is_processing or uploaded_file is None,
+            disabled=uploaded_file is None,
         )
 
         if analyze_local_btn and uploaded_file:
             if not key_in_use:
                 st.error("⚠️ Entrez votre clé OpenRouter dans la barre latérale.")
             else:
-                st.session_state.is_processing = True
-                try:
-                    file_bytes = uploaded_file.read()
-                    result, title = process_local_file(
-                        file_bytes, uploaded_file.name, selected_model, chunk_size, overlap,
-                        whisper_lang=whisper_lang, whisper_model=whisper_model_size,
-                        output_language=output_language,
-                    )
-                    st.session_state.analysis_result = result
-                    st.session_state.current_title = title
-                    add_to_history(title, uploaded_file.name, result)
-                except Exception as e:
-                    st.error(f"❌ {e}")
-                    st.session_state.analysis_result = None
-                finally:
-                    st.session_state.is_processing = False
+                file_bytes = uploaded_file.read()
+                _start_analysis_thread(
+                    uploaded_file.name,
+                    process_local_file,
+                    file_bytes, uploaded_file.name,
+                    selected_model, chunk_size, overlap,
+                    whisper_lang, whisper_model_size,
+                    output_language,
+                )
+                st.rerun()
 
     # ── Result ───────────────────────────────────────────────
     if st.session_state.analysis_result:

@@ -19,10 +19,18 @@ def load_analyzer_prompt() -> str:
     prompt_path = get_prompts_dir() / "analyzer.xml"
     return prompt_path.read_text(encoding="utf-8")
 
+def _safe_format(template: str, **kwargs) -> str:
+    """Replace {key} placeholders without tripping on literal braces in transcript content."""
+    for key, value in kwargs.items():
+        template = template.replace("{" + key + "}", str(value))
+    return template
+
+
 def prepare_analyzer_prompt(transcript: str, video_title: str, output_language: str = "Français") -> str:
     """Prepare analyzer prompt with transcript."""
     prompt_template = load_analyzer_prompt()
-    return prompt_template.format(
+    return _safe_format(
+        prompt_template,
         video_title=video_title,
         transcript=transcript,
         output_language=output_language,

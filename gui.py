@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config
 from src import extractor, chunker, analyzer, fusion
 from src.models import fetch_free_models, fetch_all_models
+from src.image_generator import generate_image, get_providers_list, get_styles_list, build_image_prompt
 
 # ──────────────────────────────────────────────────────────────
 # Constants
@@ -52,6 +53,8 @@ class App:
         self.is_processing = False
         self.current_result = ""
         self.current_title = ""
+        self.current_transcript = ""
+        self.chat_history = []
         self._local_file_bytes = None
         self._local_filename = ""
 
@@ -219,7 +222,7 @@ class App:
 
         # ── Export buttons ────────────────────────────────────
         exp_frame = ttk.Frame(root)
-        exp_frame.pack(fill=tk.X, padx=12, pady=(0, 10))
+        exp_frame.pack(fill=tk.X, padx=12, pady=(0, 5))
 
         ttk.Button(exp_frame, text="💾 Sauvegarder Markdown",
                    command=self._save_md).pack(side=tk.LEFT, padx=4)
@@ -229,6 +232,50 @@ class App:
                    command=self._copy).pack(side=tk.LEFT, padx=4)
         ttk.Button(exp_frame, text="🗑️ Effacer",
                    command=self._clear).pack(side=tk.RIGHT, padx=4)
+
+        # ── Q&A Section ───────────────────────────────────────
+        qa_frame = ttk.LabelFrame(root, text="💬 Poser une question sur la vidéo", padding=6)
+        qa_frame.pack(fill=tk.X, padx=12, pady=(0, 5))
+
+        qa_row = ttk.Frame(qa_frame)
+        qa_row.pack(fill=tk.X)
+        self._qa_entry = ttk.Entry(qa_row, font=("TkDefaultFont", 10))
+        self._qa_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+        self._qa_entry.bind("<Return>", lambda e: self._ask_qa())
+        ttk.Button(qa_row, text="💬 Demander", command=self._ask_qa).pack(side=tk.LEFT)
+
+        self._qa_history = tk.Text(qa_frame, height=4, wrap=tk.WORD,
+                                    font=("TkDefaultFont", 9), state=tk.DISABLED,
+                                    foreground="gray20")
+        self._qa_history.pack(fill=tk.X, pady=(4, 0))
+
+        # ── Image Generation Section ──────────────────────────
+        img_frame = ttk.LabelFrame(root, text="🎨 Générer une image", padding=6)
+        img_frame.pack(fill=tk.X, padx=12, pady=(0, 10))
+
+        img_row = ttk.Frame(img_frame)
+        img_row.pack(fill=tk.X)
+
+        ttk.Label(img_row, text="Provider :").pack(side=tk.LEFT)
+        providers = get_providers_list()
+        provider_names = [f"{p['icon']} {p['name']}" for p in providers]
+        self._img_provider_var = tk.StringVar(value=provider_names[0] if provider_names else "")
+        ttk.Combobox(img_row, textvariable=self._img_provider_var,
+                     values=provider_names, width=18, state="readonly").pack(side=tk.LEFT, padx=4)
+
+        ttk.Label(img_row, text="Style :").pack(side=tk.LEFT, padx=(8, 0))
+        styles = get_styles_list()
+        style_names = [s['name'] for s in styles]
+        self._img_style_var = tk.StringVar(value=style_names[0] if style_names else "")
+        ttk.Combobox(img_row, textvariable=self._img_style_var,
+                     values=style_names, width=14, state="readonly").pack(side=tk.LEFT, padx=4)
+
+        ttk.Button(img_row, text="🚀 Générer", command=self._generate_image).pack(side=tk.LEFT, padx=8)
+
+        self._img_url_var = tk.StringVar(value="")
+        self._img_link_lbl = ttk.Label(img_frame, text="", foreground="blue",
+                                        font=("TkDefaultFont", 9))
+        self._img_link_lbl.pack(anchor=tk.W, pady=(2, 0))
 
     # ── Helpers ───────────────────────────────────────────────
 
@@ -353,7 +400,10 @@ class App:
         if not self._check_ready():
             return
         self._lock(self._btn_url)
-        threading.Thread(target=self._run_url, args=(url,), daemon=True).start()
+        if extractor.detect_playlist(url):
+            threading.Thread(target=self._run_playlist, args=(url,), daemon=True).start()
+        else:
+            threading.Thread(target=self._run_url, args=(url,), daemon=True).start()
 
     def _start_local(self):
         if not self._local_file_bytes:
@@ -402,6 +452,11 @@ class App:
             duration   = transcript_data.get("total_duration_minutes", 0)
             self._status(f"📺 {title} — {duration:.1f} min — {len(transcript)} segments")
 
+            self.current_transcript = "\n".join(
+                f"[{int(e['start']//60)}:{int(e['start']%60):02d}] {e.get('text', '')}"
+                for e in transcript
+            )
+
             result = self._pipeline(transcript, title, model, chunk_size, overlap,
                                     api_key, lang_out)
             self.root.after(0, self._show_result, result, title)
@@ -434,12 +489,198 @@ class App:
             duration   = transcript_data.get("total_duration_minutes", 0)
             self._status(f"✅ {title} — {duration:.1f} min — {len(transcript)} segments")
 
+            self.current_transcript = "\n".join(
+                f"[{int(e['start']//60)}:{int(e['start']%60):02d}] {e.get('text', '')}"
+                for e in transcript
+            )
+
             result = self._pipeline(transcript, title, model, chunk_size, overlap,
                                     api_key, lang_out)
             self.root.after(0, self._show_result, result, title)
 
         except Exception as e:
             self.root.after(0, self._show_error, str(e))
+
+    # ── Q&A ───────────────────────────────────────────────────
+
+    def _ask_qa(self):
+        question = self._qa_entry.get().strip()
+        if not question or not self.current_transcript:
+            return
+        api_key = self._active_key()
+        model = self.model_var.get()
+        free_models = list(self._free_models.keys())
+        fallbacks = [m for m in free_models if m != model]
+
+        prompt = (
+            "Tu es un assistant spécialisé dans l'analyse de contenu vidéo.\n"
+            "Voici le transcript complet d'une vidéo :\n\n"
+            f"{self.current_transcript}\n\n"
+            "Réponds à la question suivante en te basant UNIQUEMENT sur le transcript ci-dessus.\n"
+            "Si la réponse ne se trouve pas dans le transcript, dis-le clairement.\n"
+            "Utilise des timestamps [min:sec] quand tu cites des passages précis.\n\n"
+            f"Question : {question}"
+        )
+
+        if len(prompt) > 120000:
+            prompt = prompt[:60000] + "\n...[transcript tronqué]...\n" + prompt[-60000:]
+
+        def _body():
+            try:
+                answer = analyzer.call_llm(
+                    prompt, model=model, max_tokens=3000,
+                    api_key=api_key, fallback_models=fallbacks,
+                )
+                self.root.after(0, self._show_qa_answer, question, answer)
+            except Exception as e:
+                self.root.after(0, self._show_qa_error, str(e))
+
+        self._set_status("🤖 Réflexion...")
+        threading.Thread(target=_body, daemon=True).start()
+
+    def _show_qa_answer(self, question: str, answer: str):
+        self.chat_history.append({"question": question, "answer": answer})
+        self._qa_entry.delete(0, tk.END)
+        self._refresh_qa_display()
+        self._set_status("✅ Question répondue")
+
+    def _show_qa_error(self, error: str):
+        self._refresh_qa_display()
+        self._set_status("❌ Erreur Q&A")
+
+    def _refresh_qa_display(self):
+        self._qa_history.config(state=tk.NORMAL)
+        self._qa_history.delete("1.0", tk.END)
+        for qa in self.chat_history[-5:]:  # Show last 5 exchanges
+            self._qa_history.insert(tk.END, f"🧑 Vous : {qa['question']}\n")
+            self._qa_history.insert(tk.END, f"🤖 {qa['answer'][:200]}{'...' if len(qa['answer']) > 200 else ''}\n")
+            self._qa_history.insert(tk.END, "-" * 40 + "\n")
+        self._qa_history.config(state=tk.DISABLED)
+
+    # ── Image Generation ──────────────────────────────────────
+
+    def _generate_image(self):
+        if not self.current_result:
+            messagebox.showwarning("Aucun résultat", "Analysez d'abord une vidéo.")
+            return
+        api_key = self._active_key()
+        provider_label = self._img_provider_var.get()
+        providers = get_providers_list()
+        provider_id = None
+        for p in providers:
+            if f"{p['icon']} {p['name']}" == provider_label:
+                provider_id = p['id']
+                break
+        if not provider_id:
+            provider_id = "flux"
+
+        style_id = self._img_style_var.get().lower()
+        style_map = {s['name']: s['id'] for s in get_styles_list()}
+        style_id = style_map.get(style_id, "realistic")
+
+        def _body():
+            try:
+                self._set_status("🎨 Génération de l'image...")
+                prompt = build_image_prompt(self.current_result, self.current_title, style=style_id)
+                result = generate_image(prompt, provider=provider_id, api_key=api_key)
+                self.root.after(0, self._show_image_result, result)
+            except Exception as e:
+                self.root.after(0, self._show_qa_error, f"Erreur image: {str(e)}")
+
+        threading.Thread(target=_body, daemon=True).start()
+
+    def _show_image_result(self, result: dict):
+        if result.get('success'):
+            url = result['image_url']
+            self._img_url_var.set(url)
+            self._img_link_lbl.config(
+                text=f"✅ Image générée ! Ouvrir le lien :\n{url}",
+                cursor="hand2",
+            )
+            self._set_status("✅ Image générée !")
+        else:
+            self._img_link_lbl.config(
+                text=f"❌ {result.get('error', 'Erreur inconnue')}",
+                foreground="red",
+            )
+            self._set_status("❌ Erreur génération image")
+
+    # ── Playlist ──────────────────────────────────────────────
+
+    def _run_playlist(self, url: str):
+        try:
+            model      = self.model_var.get()
+            chunk_size = self.chunk_var.get()
+            overlap    = max(100, chunk_size // 10)
+            force_w    = self.force_whisper_var.get()
+            w_lang     = self.whisper_lang_var.get()
+            w_model    = self.whisper_model_var.get()
+            lang_out   = self._output_language()
+            api_key    = self._active_key()
+
+            self._status("📋 Récupération des vidéos de la playlist...")
+            videos = extractor.get_playlist_videos(url)
+            total = len(videos)
+            playlist_title = f"Playlist ({total} vidéos)"
+            all_results = []
+            warnings = []
+
+            for idx, video in enumerate(videos):
+                video_url = video['url']
+                video_title = video['title']
+                self._status(f"[{idx+1}/{total}] 📥 {video_title}")
+                try:
+                    result, title, w, _ = self._run_single_video(
+                        video_url, model, chunk_size, overlap,
+                        force_w, w_lang, w_model, lang_out, api_key,
+                    )
+                    all_results.append(f"## 📺 Vidéo {idx+1} : {title}\n\n{result}\n\n---\n")
+                    for warn in w:
+                        warnings.append(f"[{video_title}] {warn}")
+                except Exception as e:
+                    warnings.append(f"[{video_title}] Erreur : {str(e)}")
+                    all_results.append(f"## 📺 Vidéo {idx+1} : {video_title}\n\n⚠️ Erreur\n\n---\n")
+
+            combined = f"# 📋 Rapport de la playlist : {playlist_title}\n\n" + "\n".join(all_results)
+            self.root.after(0, self._show_result, combined, playlist_title)
+
+        except Exception as e:
+            self.root.after(0, self._show_error, str(e))
+
+    def _run_single_video(self, url, model, chunk_size, overlap, force_w,
+                          w_lang, w_model, lang_out, api_key):
+        """Analyze a single video. Returns (result, title, warnings, transcript_text)."""
+        warnings = []
+        transcript_data = None
+
+        if not force_w:
+            try:
+                transcript_data = extractor.get_transcript(url)
+                if not transcript_data.get("transcript"):
+                    transcript_data = None
+            except Exception:
+                transcript_data = None
+
+        if transcript_data is None:
+            from src.whisper_transcriber import transcribe_url
+            transcript_data = transcribe_url(
+                url,
+                language=w_lang if w_lang != "auto" else None,
+                model_size=w_model,
+                openai_api_key=self._active_openai_key(),
+            )
+
+        transcript = transcript_data["transcript"]
+        title = transcript_data.get("title", "Video")
+        duration = transcript_data.get("total_duration_minutes", 0)
+
+        result = self._pipeline(transcript, title, model, chunk_size, overlap, api_key, lang_out)
+
+        transcript_text = "\n".join(
+            f"[{int(e['start']//60)}:{int(e['start']%60):02d}] {e.get('text', '')}"
+            for e in transcript
+        )
+        return result, title, warnings, transcript_text
 
     def _pipeline(self, transcript, title, model, chunk_size, overlap,
                   api_key, lang_out) -> str:
@@ -482,6 +723,17 @@ class App:
         self.current_title  = title
         self._result_text.delete("1.0", tk.END)
         self._result_text.insert("1.0", result)
+
+        # Reset Q&A
+        self.chat_history = []
+        self._qa_history.config(state=tk.NORMAL)
+        self._qa_history.delete("1.0", tk.END)
+        self._qa_history.config(state=tk.DISABLED)
+        self._qa_entry.delete(0, tk.END)
+
+        # Reset image
+        self._img_url_var.set("")
+        self._img_link_lbl.config(text="")
 
     def _show_error(self, msg: str):
         self._unlock(self._btn_url)
@@ -538,6 +790,14 @@ class App:
         self._result_text.delete("1.0", tk.END)
         self.current_result = ""
         self.current_title  = ""
+        self.current_transcript = ""
+        self.chat_history = []
+        self._qa_history.config(state=tk.NORMAL)
+        self._qa_history.delete("1.0", tk.END)
+        self._qa_history.config(state=tk.DISABLED)
+        self._qa_entry.delete(0, tk.END)
+        self._img_url_var.set("")
+        self._img_link_lbl.config(text="")
         self.url_var.set("")
         self._set_status("Prêt")
 

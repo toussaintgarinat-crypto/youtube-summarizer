@@ -2,6 +2,7 @@
 
 import re
 from typing import Optional, Tuple, List
+import config
 
 def extract_video_id(url: str) -> Optional[str]:
     """Extract video ID from YouTube URL."""

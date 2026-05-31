@@ -15,13 +15,19 @@ def load_fusion_prompt() -> str:
     prompt_path = get_prompts_dir() / "fusion.xml"
     return prompt_path.read_text(encoding="utf-8")
 
+def _safe_format(template: str, **kwargs) -> str:
+    """Replace {key} placeholders without tripping on literal braces in content."""
+    for key, value in kwargs.items():
+        template = template.replace("{" + key + "}", str(value))
+    return template
+
+
 def prepare_fusion_prompt(analyses: list, video_title: str, output_language: str = "Français") -> str:
     """Prepare fusion prompt with analyses."""
     prompt_template = load_fusion_prompt()
-
     analyses_text = "\n\n---\n\n".join(a for a in analyses if a)
-
-    return prompt_template.format(
+    return _safe_format(
+        prompt_template,
         video_title=video_title,
         analyses=analyses_text,
         output_language=output_language,
