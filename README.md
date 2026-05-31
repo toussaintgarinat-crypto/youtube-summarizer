@@ -59,6 +59,15 @@ docker compose up -d
 # → http://localhost:8501
 ```
 
+**📱 Mode PWA (icône sur le téléphone) :**
+
+```bash
+docker compose up -d
+# Puis ouvrir : http://localhost:8500
+# iOS  → Safari > Partager > Sur l'écran d'accueil
+# Android → Chrome > Menu > Installer l'application
+```
+
 **Autres commandes utiles :**
 
 | Commande | Effet |

@@ -46,18 +46,22 @@ echo ""
 echo "🐳 Construction de l'image Docker..."
 docker compose build --quiet 2>/dev/null || docker build -t youtube-summarizer .
 
-echo "🚀 Lancement du container..."
-docker compose up -d 2>/dev/null || docker run -d --name youtube-summarizer \
-    -p 8501:8501 --env-file .env --restart unless-stopped youtube-summarizer
+echo "🚀 Lancement des containers (Streamlit + nginx PWA)..."
+docker compose up -d
 
 echo ""
 echo "✅ L'app est prête !"
 echo "   → http://localhost:8501"
 echo ""
+echo "📱 Mode PWA (icône sur le téléphone) :"
+echo "   → http://localhost:8500"
+echo "   Compatible iOS (Safari) et Android (Chrome)"
+echo "   Ajoutez à l'écran d'accueil depuis le navigateur du téléphone."
+echo ""
 
 # ── Ouvrir le navigateur ────────────────────────────────────
 case "$OSTYPE" in
-    darwin*)  open "http://localhost:8501" ;;
-    linux*)   xdg-open "http://localhost:8501" 2>/dev/null || true ;;
-    msys|cygwin) start "http://localhost:8501" ;;
+    darwin*)  open "http://localhost:8500" ;;
+    linux*)   xdg-open "http://localhost:8500" 2>/dev/null || true ;;
+    msys|cygwin) start "http://localhost:8500" ;;
 esac

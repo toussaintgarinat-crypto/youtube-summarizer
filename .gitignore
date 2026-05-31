@@ -10,3 +10,4 @@ build/
 *.egg-info/
 .eggs/
 .playwright-mcp/
+pwa/icon-*.png

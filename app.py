@@ -723,6 +723,13 @@ def render_processing_ui():
 # Main
 # ──────────────────────────────────────────────────────────────
 
+def _inject_pwa():
+    st.markdown(
+        '<script>if("serviceWorker" in navigator){navigator.serviceWorker.register("/pwa/sw.js")}</script>',
+        unsafe_allow_html=True,
+    )
+
+
 def main():
     st.set_page_config(
         page_title="YouTube Summarizer",
@@ -730,6 +737,7 @@ def main():
         layout="wide",
     )
 
+    _inject_pwa()
     init_session_state()
 
     if not check_password():
