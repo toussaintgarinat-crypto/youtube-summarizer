@@ -22,17 +22,20 @@ fi
 # ── Créer .env si nécessaire ────────────────────────────────
 if [ ! -f .env ]; then
     cp .env.example .env
-    echo ""
-    echo "🔑 Fichier .env créé."
-    echo "   Tu dois y mettre ta clé OpenRouter."
-    echo "   Obtiens-en une gratuitement sur https://openrouter.ai/keys"
-    echo ""
-    read -rp "   Colle ta clé OpenRouter (sk-or-v1-...) : " api_key
-    if [ -n "$api_key" ]; then
+    API_KEY="${OPENROUTER_API_KEY:-}"
+    if [ -z "$API_KEY" ]; then
+        echo ""
+        echo "🔑 Clé OpenRouter requise."
+        echo "   Obtiens-en une gratuitement sur https://openrouter.ai/keys"
+        echo "   Ou passe-la en variable : OPENROUTER_API_KEY=sk-or-... bash start.sh"
+        echo ""
+        read -rp "   Colle ta clé OpenRouter (sk-or-v1-...) : " API_KEY
+    fi
+    if [ -n "$API_KEY" ]; then
         if [[ "$OSTYPE" == "darwin"* ]]; then
-            sed -i '' "s|sk-or-votre-cle-api-ici|$api_key|" .env
+            sed -i '' "s|sk-or-votre-cle-api-ici|$API_KEY|" .env
         else
-            sed -i "s|sk-or-votre-cle-api-ici|$api_key|" .env
+            sed -i "s|sk-or-votre-cle-api-ici|$API_KEY|" .env
         fi
         echo "   ✅ Clé enregistrée dans .env"
     fi
