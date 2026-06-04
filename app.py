@@ -18,6 +18,7 @@ from datetime import datetime
 import streamlit as st
 import config
 from src import extractor, chunker, analyzer, fusion
+from src import tts_generator, local_llm, drive_exporter
 from src.models import fetch_free_models, fetch_all_models
 from src.image_generator import generate_image, get_providers_list, get_styles_list, build_image_prompt, enhance_image_prompt
 from src.excalidraw_generator import generate_diagram as generate_excalidraw
@@ -179,6 +180,9 @@ def run_pipeline(
     cancel_event=None,
 ) -> str:
     """Chunk → Analyze → Fuse. Reports progress via on_progress(pct: int, msg: str)."""
+    use_local = st.session_state.get("use_local_llm", False)
+    local_model = st.session_state.get("local_llm_model", "llama3.2")
+
     api_key = active_api_key()
     free_models = list(_cached_free_models().keys())
     fallbacks = [m for m in free_models if m != model]
@@ -204,10 +208,15 @@ def run_pipeline(
     for i, chunk in enumerate(chunks):
         _check_cancel()
         _progress(20 + 70 * (i + 1) // total_chunks, f"🤖 Analyse chunk {i + 1}/{total_chunks} ({chunk.get('token_count', 0)} tokens)...")
-        analyses.append(analyzer.analyze_chunk(
-            chunk["text"], video_title, model=model, api_key=api_key,
-            output_language=output_language, fallback_models=fallbacks,
-        ))
+        if use_local:
+            analyses.append(local_llm.analyze_chunk_local(
+                chunk["text"], video_title, model=local_model, output_language=output_language,
+            ))
+        else:
+            analyses.append(analyzer.analyze_chunk(
+                chunk["text"], video_title, model=model, api_key=api_key,
+                output_language=output_language, fallback_models=fallbacks,
+            ))
         if len(chunks) > 1:
             time.sleep(1)
 
@@ -215,10 +224,14 @@ def run_pipeline(
     final_analysis = analyses[0]
     if len(analyses) > 1:
         _progress(95, f"🔗 Fusion des {len(analyses)} analyses…")
-        final_analysis = fusion.fusion_analyses(
-            analyses, video_title, model, api_key=api_key,
-            output_language=output_language, fallback_models=fallbacks,
-        )
+        if use_local:
+            merged = "\n\n".join(analyses)
+            final_analysis = merged
+        else:
+            final_analysis = fusion.fusion_analyses(
+                analyses, video_title, model, api_key=api_key,
+                output_language=output_language, fallback_models=fallbacks,
+            )
 
     _progress(100, "✅ Terminé !")
     return final_analysis
@@ -548,6 +561,11 @@ def run_qa(question: str, transcript_text: str) -> str:
     if len(prompt) > 120000:
         prompt = prompt[:60000] + "\n...[transcript tronqué]...\n" + prompt[-60000:]
 
+    use_local = st.session_state.get("use_local_llm", False)
+    local_model = st.session_state.get("local_llm_model", "llama3.2")
+    if use_local:
+        return local_llm.call_local_llm(prompt, model=local_model, max_tokens=3000)
+
     return analyzer.call_llm(
         prompt, model=model, max_tokens=3000,
         api_key=api_key, fallback_models=fallbacks,
@@ -673,7 +691,10 @@ def render_excalidraw_generation(result: str, title: str):
             with st.status("🧠 Génération du schéma conceptuel…", expanded=True) as status:
                 st.write("🤖 Extraction des concepts via IA…")
                 selected = st.session_state.get("selected_model", "")
-                diag = generate_excalidraw(result, title, api_key=active_api_key(), model=selected)
+                use_local = st.session_state.get("use_local_llm", False)
+                local_model = st.session_state.get("local_llm_model", "llama3.2")
+                diag = generate_excalidraw(result, title, api_key=active_api_key(), model=selected,
+                                            use_local=use_local, local_model=local_model)
 
                 if diag.get("success"):
                     st.session_state.excalidraw_json = diag["diagram_json"]
@@ -727,6 +748,65 @@ def show_result(result: str, title: str):
             )
         except Exception as e:
             st.caption(f"PDF non disponible : {e}")
+
+    # ── TTS & Drive export ────────────────────────────────────
+    col_tts, col_drive = st.columns(2)
+    with col_tts:
+        tts_label = f"🔊 Lire le résumé ({st.session_state.get('tts_method', 'gTTS')})"
+        if st.button(tts_label, key="btn_tts_summary", type="secondary"):
+            tts_methods = {m["name"]: m["id"] for m in tts_generator.get_tts_methods()}
+            method_id = tts_methods.get(st.session_state.get("tts_method", "gTTS"), "gtts")
+            with st.spinner("🔊 Génération audio..."):
+                tts_res = tts_generator.generate_tts(result[:3000], method=method_id)
+            if tts_res["success"]:
+                with open(tts_res["audio_path"], "rb") as f:
+                    audio_bytes = f.read()
+                st.session_state.last_audio = audio_bytes
+                st.audio(audio_bytes, format="audio/mp3")
+            else:
+                st.error(f"❌ {tts_res['error']}")
+        if st.session_state.get("last_audio") and not st.session_state.get("btn_tts_summary", False):
+            st.audio(st.session_state.last_audio, format="audio/mp3")
+
+    with col_drive:
+        if st.session_state.get("drive_tokens"):
+            if st.button("☁️ Tout exporter sur Drive", type="secondary", key="btn_drive_export"):
+                tokens = st.session_state.drive_tokens
+                access_token = tokens.get("access_token", "")
+                files_to_export = []
+
+                # Summary MD
+                with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8") as f:
+                    f.write(result)
+                    files_to_export.append((f.name, f"{title[:40]}_analyse.md", "text/markdown"))
+
+                # Excalidraw
+                if st.session_state.get("excalidraw_json"):
+                    with tempfile.NamedTemporaryFile(mode="w", suffix=".excalidraw", delete=False, encoding="utf-8") as f:
+                        f.write(st.session_state.excalidraw_json)
+                        files_to_export.append((f.name, f"{title[:40]}_schema.excalidraw", "application/json"))
+
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                results = []
+                for idx, (path, name, mime) in enumerate(files_to_export):
+                    status_text.info(f"☁️ Envoi de {name}...")
+                    res = drive_exporter.upload_to_drive(path, name, mime, access_token)
+                    results.append(res)
+                    progress_bar.progress((idx + 1) / len(files_to_export))
+                    os.unlink(path)
+
+                success_count = sum(1 for r in results if r["success"])
+                if success_count == len(results):
+                    st.success(f"✅ {success_count} fichier(s) exporté(s) sur Google Drive !")
+                else:
+                    for r in results:
+                        if not r["success"]:
+                            st.warning(f"⚠️ {r.get('file_name', '?')}: {r.get('error', '?')}")
+                    if success_count > 0:
+                        st.success(f"✅ {success_count}/{len(results)} exporté(s)")
+        else:
+            st.info("☁️ Configurez Google Drive dans la sidebar pour exporter")
 
     st.markdown(result)
 
@@ -919,6 +999,21 @@ def main():
     )
 
     st.sidebar.markdown("---")
+    with st.sidebar.expander("🧠 Local LLM (Ollama)", expanded=False):
+        use_local_llm = st.checkbox("Utiliser Ollama", value=False, key="use_local_llm",
+                                    help="Utilise un modèle local via Ollama au lieu d'OpenRouter.")
+        ollama_status = local_llm.check_ollama()
+        if use_local_llm:
+            if ollama_status["available"]:
+                st.success(f"✅ Ollama connecté — {len(ollama_status['models'])} modèle(s) dispo(s)")
+                local_model = st.selectbox("Modèle local", options=ollama_status["models"] or ["llama3.2"],
+                                           key="local_llm_model")
+            else:
+                st.error(f"❌ Ollama: {ollama_status['error']}")
+                st.info("💡 Lancez 'ollama serve' dans un terminal après avoir installé Ollama (ollama.com)")
+                st.session_state.use_local_llm = False
+
+    st.sidebar.markdown("---")
     st.sidebar.markdown("### 🌐 Langue du résumé")
     LANGUAGE_OPTIONS = {
         "🇫🇷 Français": "Français",
@@ -979,6 +1074,60 @@ def main():
 
     free_tag = " 🆓" if selected_model.endswith(":free") else ""
     st.sidebar.markdown(f"**Contexte :** {ctx_limit:,} tokens{free_tag}")
+
+    st.sidebar.markdown("---")
+    with st.sidebar.expander("☁️ Google Drive", expanded=False):
+        st.caption("Sauvegardez vos exports directement sur Google Drive.")
+        drive_client_id = st.text_input("Google Client ID", type="password",
+                                         placeholder="votre-id.apps.googleusercontent.com",
+                                         key="drive_client_id")
+        drive_client_secret = st.text_input("Client Secret", type="password",
+                                             placeholder="GOCSPX-...",
+                                             key="drive_client_secret")
+        if st.session_state.get("drive_tokens"):
+            st.success("✅ Connecté à Google Drive")
+            if st.button("Déconnecter", key="btn_drive_disconnect"):
+                st.session_state.drive_tokens = None
+                st.session_state.drive_folder_id = None
+                st.rerun()
+        elif drive_client_id and drive_client_secret:
+            auth_url = drive_exporter.get_google_auth_url(
+                drive_client_id, "http://localhost:8501"
+            )
+            st.markdown(f"1. [🔗 Autoriser l'accès Google]({auth_url})")
+            st.markdown("2. Collez le code de redirection ci-dessous :")
+            auth_code = st.text_input("Code d'autorisation", key="drive_auth_code", label_visibility="collapsed")
+            if auth_code:
+                result = drive_exporter.exchange_code_for_token(
+                    drive_client_id, drive_client_secret, auth_code, "http://localhost:8501"
+                )
+                if result["success"]:
+                    st.session_state.drive_tokens = result["tokens"]
+                    st.success("✅ Connecté !")
+                    st.rerun()
+                else:
+                    st.error(f"❌ {result['error']}")
+        else:
+            st.info("Entrez votre Google Client ID pour activer Drive.")
+            st.caption("Créez un projet sur console.cloud.google.com, activez Drive API, "
+                       "créez un OAuth 2.0 Client ID de type 'Web application' "
+                       "avec redirect URI http://localhost:8501")
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 🔊 Synthèse vocale")
+    tts_methods = tts_generator.get_tts_methods()
+    tts_options = {m["name"]: m["id"] for m in tts_methods}
+    st.sidebar.selectbox("Méthode TTS", options=list(tts_options.keys()), index=0,
+                          key="tts_method", help="gTTS : cloud gratuit. Moshi : local GPU lourd.")
+    if st.sidebar.button("🔊 Tester", key="btn_tts_test", type="secondary"):
+        with st.spinner("Génération audio..."):
+            method_id = tts_options[st.session_state.tts_method]
+            result = tts_generator.generate_tts("Bonjour, ceci est un test de synthèse vocale.", method=method_id)
+            if result["success"]:
+                with open(result["audio_path"], "rb") as f:
+                    st.sidebar.audio(f.read(), format="audio/mp3")
+            else:
+                st.sidebar.error(result["error"])
 
     if st.session_state.history:
         st.sidebar.markdown("---")

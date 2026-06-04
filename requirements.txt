@@ -6,3 +6,7 @@ requests
 fpdf2
 openai
 yt-dlp>=2026.3.17
+gtts
+google-auth-oauthlib
+google-auth-httplib2
+google-api-python-client

@@ -99,15 +99,18 @@ Résumé :
 Concepts :"""
 
 
-def _extract_via_llm(text: str, api_key: str, model: str) -> list:
-    from src.analyzer import call_llm
-
+def _extract_via_llm(text: str, api_key: str, model: str, use_local: bool = False, local_model: Optional[str] = None) -> list:
     prompt = PROMPT_TEMPLATE.format(text=text[:4000])
     try:
-        response = call_llm(
-            prompt, model=model, api_key=api_key,
-            max_tokens=500, temperature=0.3,
-        )
+        if use_local:
+            from src.local_llm import call_local_llm
+            response = call_local_llm(prompt, model=local_model or "llama3.2", max_tokens=500, temperature=0.3)
+        else:
+            from src.analyzer import call_llm
+            response = call_llm(
+                prompt, model=model, api_key=api_key,
+                max_tokens=500, temperature=0.3,
+            )
     except Exception:
         return []
 
@@ -274,8 +277,10 @@ def generate_diagram(
     video_title: str,
     api_key: Optional[str] = None,
     model: Optional[str] = None,
+    use_local: bool = False,
+    local_model: Optional[str] = None,
 ) -> dict:
-    labels = _extract_via_llm(analysis_text, api_key, model)
+    labels = _extract_via_llm(analysis_text, api_key, model, use_local=use_local, local_model=local_model)
 
     if len(labels) < 2:
         labels = _extract_from_markdown(analysis_text)
