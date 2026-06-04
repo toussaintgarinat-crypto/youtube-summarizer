@@ -16,6 +16,7 @@ import config
 from src import extractor, chunker, analyzer, fusion
 from src.models import fetch_free_models, fetch_all_models
 from src.image_generator import generate_image, get_providers_list, get_styles_list, build_image_prompt
+from src.excalidraw_generator import generate_diagram as generate_excalidraw
 
 # ──────────────────────────────────────────────────────────────
 # Constants
@@ -276,6 +277,19 @@ class App:
         self._img_link_lbl = ttk.Label(img_frame, text="", foreground="blue",
                                         font=("TkDefaultFont", 9))
         self._img_link_lbl.pack(anchor=tk.W, pady=(2, 0))
+
+        # ── Excalidraw Section ────────────────────────────────
+        exc_frame = ttk.LabelFrame(root, text="📐 Schéma Excalidraw", padding=6)
+        exc_frame.pack(fill=tk.X, padx=12, pady=(0, 10))
+
+        exc_row = ttk.Frame(exc_frame)
+        exc_row.pack(fill=tk.X)
+
+        ttk.Button(exc_row, text="📐 Générer le schéma", command=self._generate_excalidraw).pack(side=tk.LEFT, padx=4)
+
+        self._excalidraw_status = tk.StringVar(value="")
+        ttk.Label(exc_frame, textvariable=self._excalidraw_status,
+                  foreground="gray20", font=("TkDefaultFont", 9)).pack(anchor=tk.W, pady=(2, 0))
 
     # ── Helpers ───────────────────────────────────────────────
 
@@ -557,6 +571,50 @@ class App:
             self._qa_history.insert(tk.END, "-" * 40 + "\n")
         self._qa_history.config(state=tk.DISABLED)
 
+    # ── Excalidraw Generation ─────────────────────────────────
+
+    def _generate_excalidraw(self):
+        if not self.current_result:
+            messagebox.showwarning("Aucun résultat", "Analysez d'abord une vidéo.")
+            return
+        api_key = self._active_key()
+
+        def _body():
+            try:
+                self._set_status("📐 Génération du schéma Excalidraw...")
+                result = generate_excalidraw(self.current_result, self.current_title, api_key=api_key)
+                self.root.after(0, self._show_excalidraw_result, result)
+            except Exception as e:
+                self.root.after(0, self._show_excalidraw_error, str(e))
+
+        threading.Thread(target=_body, daemon=True).start()
+
+    def _show_excalidraw_result(self, result: dict):
+        if result.get('success'):
+            json_str = result['diagram_json']
+            fname = f"{self.current_title[:40]}_schema.excalidraw"
+            path = filedialog.asksaveasfilename(
+                defaultextension=".excalidraw",
+                initialfile=fname,
+                filetypes=[("Excalidraw", "*.excalidraw"), ("JSON", "*.json")],
+            )
+            if path:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(json_str)
+                n = len(result.get("concepts", []))
+                self._excalidraw_status.set(f"✅ Schéma sauvegardé ({n} concepts)")
+                self._set_status(f"✅ Schéma Excalidraw sauvegardé")
+            else:
+                self._excalidraw_status.set("⚠️ Sauvegarde annulée")
+                self._set_status("Prêt")
+        else:
+            self._excalidraw_status.set(f"❌ {result.get('error', 'Erreur inconnue')}")
+            self._set_status("❌ Erreur génération schéma")
+
+    def _show_excalidraw_error(self, msg: str):
+        self._excalidraw_status.set(f"❌ {msg}")
+        self._set_status("❌ Erreur génération schéma")
+
     # ── Image Generation ──────────────────────────────────────
 
     def _generate_image(self):
@@ -735,6 +793,9 @@ class App:
         self._img_url_var.set("")
         self._img_link_lbl.config(text="")
 
+        # Reset excalidraw
+        self._excalidraw_status.set("")
+
     def _show_error(self, msg: str):
         self._unlock(self._btn_url)
         self._unlock(self._btn_local)
@@ -798,6 +859,7 @@ class App:
         self._qa_entry.delete(0, tk.END)
         self._img_url_var.set("")
         self._img_link_lbl.config(text="")
+        self._excalidraw_status.set("")
         self.url_var.set("")
         self._set_status("Prêt")
 

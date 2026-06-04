@@ -19,7 +19,8 @@ import streamlit as st
 import config
 from src import extractor, chunker, analyzer, fusion
 from src.models import fetch_free_models, fetch_all_models
-from src.image_generator import generate_image, get_providers_list, get_styles_list, build_image_prompt
+from src.image_generator import generate_image, get_providers_list, get_styles_list, build_image_prompt, enhance_image_prompt
+from src.excalidraw_generator import generate_diagram as generate_excalidraw
 
 
 # ──────────────────────────────────────────────────────────────
@@ -139,9 +140,10 @@ def init_session_state():
         "generated_image_url": "",
         "generated_image_provider": "",
         "generated_image_prompt": "",
+        "excalidraw_json": "",
+        "excalidraw_concepts": [],
         # Background thread state
-        "_thread_progress": 0,
-        "_thread_status": "",
+        "_thread_finished": False,
         "_result_queue": None,
         "_cancel_event": None,
         "_processing_source": "",
@@ -154,6 +156,12 @@ def init_session_state():
 def active_api_key() -> str:
     """Return the user's custom key if set, otherwise the default from config/secrets."""
     return st.session_state.get("custom_api_key", "") or config.OPENROUTER_API_KEY
+
+
+def get_provider_api_key(provider_id: str) -> str:
+    """Return the API key for a specific provider, if configured."""
+    key = st.session_state.get(f"provider_key_{provider_id}", "")
+    return key or active_api_key()
 
 
 # ──────────────────────────────────────────────────────────────
@@ -183,17 +191,19 @@ def run_pipeline(
         if cancel_event and cancel_event.is_set():
             raise InterruptedError("Analyse annulée par l'utilisateur")
 
-    _progress(0, "✂️ Découpage en chunks...")
+    _progress(0, "✂️ Découpage en chunks…")
     chunks = chunker.chunk_transcript(transcript, max_tokens=chunk_size, overlap_tokens=overlap, model=model)
     chunk_info = chunker.get_chunk_count_info(chunks)
-    _progress(20, f"📊 {chunk_info}")
-    # Brief pause so the user can read the chunk info before LLM calls start
-    time.sleep(0.8)
+    total_chunks = len(chunks)
+    _progress(15, f"📊 {chunk_info}")
+    time.sleep(1.5)
+    _progress(15, f"📊 {chunk_info} — analyse de {total_chunks} lot(s)…")
+    time.sleep(1.0)
 
     analyses = []
     for i, chunk in enumerate(chunks):
         _check_cancel()
-        _progress(20 + 70 * (i + 1) // len(chunks), f"🤖 Analyse chunk {i + 1}/{len(chunks)}...")
+        _progress(20 + 70 * (i + 1) // total_chunks, f"🤖 Analyse chunk {i + 1}/{total_chunks} ({chunk.get('token_count', 0)} tokens)...")
         analyses.append(analyzer.analyze_chunk(
             chunk["text"], video_title, model=model, api_key=api_key,
             output_language=output_language, fallback_models=fallbacks,
@@ -204,7 +214,7 @@ def run_pipeline(
     _check_cancel()
     final_analysis = analyses[0]
     if len(analyses) > 1:
-        _progress(95, "🔗 Fusion des analyses...")
+        _progress(95, f"🔗 Fusion des {len(analyses)} analyses…")
         final_analysis = fusion.fusion_analyses(
             analyses, video_title, model, api_key=api_key,
             output_language=output_language, fallback_models=fallbacks,
@@ -458,15 +468,27 @@ def process_playlist(
 # Background thread helpers
 # ──────────────────────────────────────────────────────────────
 
+# Shared thread-safe progress store (not st.session_state — avoids ScriptRunContext issues)
+_thread_progress_store = {"pct": 0, "msg": "Démarrage..."}
+_thread_progress_lock = threading.Lock()
+
+def _set_progress(pct: int, msg: str):
+    with _thread_progress_lock:
+        _thread_progress_store["pct"] = pct
+        _thread_progress_store["msg"] = msg
+
+def _get_progress():
+    with _thread_progress_lock:
+        return _thread_progress_store["pct"], _thread_progress_store["msg"]
+
+
 def _start_analysis_thread(source: str, fn, *args, **kwargs):
     """Run fn(*args, **kwargs) in a daemon thread. fn must return (result, title, warnings)."""
     cancel_ev = threading.Event()
     result_q: queue.Queue = queue.Queue()
 
     def _on_progress(pct: int, msg: str):
-        # Writing simple values to session_state from a thread is safe in CPython (GIL)
-        st.session_state._thread_progress = min(pct, 100)
-        st.session_state._thread_status = msg
+        _set_progress(min(pct, 100), msg)
 
     def _body():
         try:
@@ -477,11 +499,10 @@ def _start_analysis_thread(source: str, fn, *args, **kwargs):
         except Exception as e:
             result_q.put(("error", str(e), "", "", ""))
 
+    _set_progress(0, "Démarrage...")
     st.session_state._cancel_event = cancel_ev
     st.session_state._result_queue = result_q
     st.session_state._processing_source = source
-    st.session_state._thread_progress = 0
-    st.session_state._thread_status = "Démarrage..."
     st.session_state.is_processing = True
 
     threading.Thread(target=_body, daemon=True).start()
@@ -561,6 +582,37 @@ def render_image_generation(result: str, title: str):
             key="img_style",
         )
         selected_style = style_options[selected_style_label]
+        style_obj = next((s for s in styles if s["id"] == selected_style), None)
+
+        # Prompt mode: Auto or Custom
+        prompt_mode = st.radio(
+            "Source du prompt",
+            ["🔧 Auto (généré depuis le résumé)", "✏️ Personnalisé"],
+            index=0,
+            horizontal=True,
+            key="img_prompt_mode",
+        )
+
+        custom_prompt = ""
+        if "Personnalisé" in prompt_mode:
+            custom_prompt = st.text_area(
+                "Votre prompt",
+                placeholder="Décrivez l'image que vous voulez générer...",
+                key="img_custom_prompt",
+                height=120,
+            )
+            col_enhance, _ = st.columns([1, 3])
+            with col_enhance:
+                enhance_btn = st.button("🤖 Améliorer le prompt (CTLT+)", key="btn_enhance_prompt")
+            if enhance_btn and custom_prompt.strip():
+                with st.spinner("🧠 Amélioration du prompt..."):
+                    enhanced = enhance_image_prompt(custom_prompt.strip(), active_api_key(), st.session_state.get("selected_model", ""))
+                if enhanced.get("success"):
+                    st.session_state["img_custom_prompt"] = enhanced["enhanced"]
+                    st.success("✅ Prompt amélioré !")
+                    st.rerun()
+                else:
+                    st.error(f"❌ {enhanced.get('error', 'Erreur')}")
 
         col_gen, col_dl = st.columns([1, 1])
         with col_gen:
@@ -574,11 +626,14 @@ def render_image_generation(result: str, title: str):
 
         if generate_btn:
             with st.spinner("🎨 Génération de l'image..."):
-                image_prompt = build_image_prompt(result, title, style=selected_style)
+                if "Personnalisé" in prompt_mode and custom_prompt.strip():
+                    image_prompt = custom_prompt.strip()
+                else:
+                    image_prompt = build_image_prompt(result, title, style=selected_style)
                 img_result = generate_image(
                     prompt=image_prompt,
                     provider=selected_provider,
-                    api_key=active_api_key(),
+                    api_key=get_provider_api_key(selected_provider),
                 )
 
             if img_result.get('success'):
@@ -593,6 +648,55 @@ def render_image_generation(result: str, title: str):
             st.image(st.session_state.generated_image_url,
                      caption=st.session_state.generated_image_prompt,
                      use_container_width=True)
+
+
+def render_excalidraw_generation(result: str, title: str):
+    """Render Excalidraw diagram generation UI after analysis."""
+    with st.expander("📐 Générer un schéma conceptuel (Excalidraw)", expanded=False):
+        st.markdown("Générez un diagramme arborescent des concepts clés de la vidéo, éditable dans [Excalidraw](https://excalidraw.com).")
+
+        col_gen, col_dl = st.columns([1, 1])
+        with col_gen:
+            gen_btn = st.button("📐 Générer le schéma", type="primary", key="btn_excalidraw")
+        with col_dl:
+            if st.session_state.excalidraw_json:
+                ext = ".excalidraw"
+                st.download_button(
+                    "💾 Télécharger .excalidraw",
+                    data=st.session_state.excalidraw_json,
+                    file_name=f"{title[:40]}_schema{ext}",
+                    mime="application/json",
+                    key="dl_excalidraw",
+                )
+
+        if gen_btn:
+            with st.status("🧠 Génération du schéma conceptuel…", expanded=True) as status:
+                st.write("🤖 Extraction des concepts via IA…")
+                selected = st.session_state.get("selected_model", "")
+                diag = generate_excalidraw(result, title, api_key=active_api_key(), model=selected)
+
+                if diag.get("success"):
+                    st.session_state.excalidraw_json = diag["diagram_json"]
+                    st.session_state.excalidraw_concepts = diag.get("concepts", [])
+                    n = len(diag.get("concepts", []))
+                    st.write(f"✅ {n} concepts extraits")
+                    st.write("📐 Génération du diagramme…")
+                    status.update(label=f"✅ Schéma généré ({n} concepts)", state="complete")
+                    st.success(f"📥 Téléchargez le fichier .excalidraw puis ouvrez-le sur https://excalidraw.com")
+                    with st.expander("👁️ Aperçu des concepts extraits", expanded=True):
+                        for c in diag.get("concepts", []):
+                            parent = next(
+                                (x["label"] for x in diag.get("concepts", []) if x["id"] == c.get("parent_id")),
+                                "─",
+                            )
+                            st.markdown(f"- **{c['label']}** → parent : *{parent}*")
+                else:
+                    status.update(label="❌ Échec", state="error")
+                    st.error(f"❌ {diag.get('error', 'Erreur inconnue')}")
+
+        if st.session_state.excalidraw_json and not gen_btn:
+            n = len(st.session_state.excalidraw_concepts)
+            st.success(f"✅ Schéma prêt ({n} concepts) — téléchargez le fichier ci-dessus")
 
 
 # ──────────────────────────────────────────────────────────────
@@ -661,6 +765,9 @@ def show_result(result: str, title: str):
     # ── Image generation section ──────────────────────────────
     render_image_generation(result, title)
 
+    # ── Excalidraw diagram section ─────────────────────────────
+    render_excalidraw_generation(result, title)
+
 
 # ──────────────────────────────────────────────────────────────
 # Processing UI — polling loop (replaces tabs while a thread runs)
@@ -669,17 +776,16 @@ def show_result(result: str, title: str):
 def render_processing_ui():
     """Show progress bar + cancel button. Poll the result queue and rerun until done."""
     st.markdown("---")
-    prog = st.session_state._thread_progress
-    msg = st.session_state._thread_status
+    prog, msg = _get_progress()
 
     st.progress(prog / 100)
-    st.caption(msg)
+    st.markdown(f"<h4 style='text-align: center; color: #555;'>{msg}</h4>", unsafe_allow_html=True)
 
     if st.button("🛑 Annuler l'analyse", type="secondary"):
         cancel_ev = st.session_state._cancel_event
         if cancel_ev:
             cancel_ev.set()
-        st.session_state._thread_status = "⏳ Annulation en cours (fin de la requête courante)..."
+        _set_progress(0, "⏳ Annulation en cours (fin de la requête courante)...")
 
     q: queue.Queue | None = st.session_state._result_queue
     if q is not None:
@@ -688,8 +794,7 @@ def render_processing_ui():
             status = data[0]
 
             st.session_state.is_processing = False
-            st.session_state._thread_progress = 0
-            st.session_state._thread_status = ""
+            _set_progress(0, "")
 
             if status == "ok":
                 _, result, title, warnings, transcript_text = data
@@ -700,6 +805,8 @@ def render_processing_ui():
                 st.session_state.current_transcript = transcript_text
                 st.session_state.chat_history = []
                 st.session_state.generated_image_url = ""
+                st.session_state.excalidraw_json = ""
+                st.session_state.excalidraw_concepts = []
                 add_to_history(title, st.session_state._processing_source, result)
             elif status == "cancelled":
                 st.info("ℹ️ Analyse annulée.")
@@ -765,6 +872,19 @@ def main():
         st.sidebar.info("Clé par défaut utilisée")
     else:
         st.sidebar.error("Aucune clé API — entrez la vôtre ci-dessus")
+
+    with st.sidebar.expander("🔌 Providers images", expanded=False):
+        st.caption("Clés API pour les providers d'image externes (optionnel). Laissez vide pour utiliser la clé OpenRouter.")
+        for pid in ["stability-ai", "replicate", "pruna"]:
+            label = {"stability-ai": "Stability AI", "replicate": "Replicate", "pruna": "Pruna AI"}[pid]
+            placeholder = {"stability-ai": "sk-...", "replicate": "r8_...", "pruna": "Clé Pruna"}[pid]
+            st.text_input(
+                f"{label}",
+                type="password",
+                placeholder=placeholder,
+                key=f"provider_key_{pid}",
+                label_visibility="collapsed",
+            )
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 🤖 Modèle")

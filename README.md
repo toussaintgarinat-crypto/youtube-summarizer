@@ -30,7 +30,10 @@ L'app est alors accessible sur **[http://localhost:8501](http://localhost:8501)*
 | **📁 Fichiers locaux** | Analyse de mp3, mp4, wav, m4a, ogg, flac, webm, mkv, avi, mov |
 | **🎬 Playlists YouTube** | Analyse toutes les vidéos d'une playlist avec un rapport consolidé |
 | **💬 Chat / Q&A** | Posez des questions sur le contenu de la vidéo après l'analyse |
-| **🖼️ Génération d'images** | Créez une illustration du résumé (Flux, DALL-E, SD, Midjourney) |
+| **🖼️ Génération d'images** | Créez une illustration du résumé — **10 providers** : Flux, Recraft, Gemini, OpenAI, Seedream, Riverflow, MAI Image, Grok Imagine, Stability AI (direct), Replicate (direct), Pruna AI (direct) |
+| **📐 Schéma Excalidraw** | Génération automatique d'un diagramme arborescent des concepts clés, éditable dans [Excalidraw](https://excalidraw.com) |
+| **✏️ Prompt custom + amélioration IA** | Écrivez votre propre prompt ou faites-le améliorer par l'IA (méthode CTLT+) |
+| **🔌 Providers centralisés** | Toutes les clés API (OpenRouter, Stability AI, Replicate, Pruna AI) configurables dans la sidebar |
 | **🌍 Multilingue** | Résumé en français, anglais, espagnol, allemand, portugais, italien |
 | **📄 Export** | Markdown, PDF |
 | **🔄 Fallback automatique** | Bascule sur un autre modèle LLM gratuit en cas de saturation |
@@ -189,11 +192,11 @@ Les **modèles gratuits** (suffixe `:free`) ne nécessitent aucun crédit.
                    │  Résumé final  │
                    └────────┬───────┘
                             ↓
-              ┌─────────────┼─────────────┐
-              │             │             │
-         Export MD      Chat Q&A     Image gen
-         Export PDF    (transcript   (résumé →
-                       → question)   prompt → IA)
+               ┌─────────────┼──────────────┬──────────────┐
+               │             │              │              │
+          Export MD      Chat Q&A      Image gen      Excalidraw
+          Export PDF    (transcript    (résumé →      (concepts →
+                        → question)    prompt → IA)   arbre → .excalidraw)
 ```
 
 ### Détail de chaque étape
@@ -244,7 +247,8 @@ Pour les vidéos longues (multi-chunks) :
 |---|---|---|
 | **📄 PDF** | `src/pdf_exporter.py` | Conversion Markdown → PDF (fpdf2) |
 | **💬 Chat Q&A** | Intégré dans l'UI | LLM + transcript complet comme contexte |
-| **🖼️ Image** | `src/image_generator.py` | Flux, DALL-E, SD, Midjourney via OpenRouter |
+| **🖼️ Image** | `src/image_generator.py` | 10 providers : Flux, Recraft, Gemini, OpenAI, Seedream, Riverflow, MAI Image, Grok Imagine, Stability AI (direct), Replicate (direct), Pruna AI (direct). Prompt custom + amélioration CTLT+ |
+| **📐 Excalidraw** | `src/excalidraw_generator.py` | Extraction de concepts via LLM + fallback markdown, layout arbre, export .excalidraw |
 
 ---
 
@@ -273,7 +277,8 @@ youtube-summarizer/
 │   ├── analyzer.py            # Appel LLM OpenRouter avec fallback
 │   ├── fusion.py              # Fusion multi-chunks
 │   ├── models.py              # Liste dynamique des modèles OpenRouter
-│   ├── image_generator.py     # Génération d'images (4 providers)
+│   ├── image_generator.py     # Génération d'images (10 providers + prompt custom + CTLT+)
+│   ├── excalidraw_generator.py# Schémas conceptuels Excalidraw (LLM + layout arbre)
 │   └── pdf_exporter.py        # Export Markdown → PDF
 │
 ├── prompts/
@@ -300,11 +305,12 @@ youtube-summarizer/
 
 | Élément | Description |
 |---|---|
-| **🔑 Sidebar** | Clé API, modèle LLM, chunk size, langue, cookies Whisper |
+| **🔑 Sidebar** | Clé API, modèle LLM, chunk size, langue, cookies Whisper, **providers images** (Stability AI, Replicate, Pruna AI) |
 | **🔗 Tab URL** | URL vidéo, playlist, ou plateforme tierce |
 | **📁 Tab Fichier** | Upload audio/vidéo local |
 | **📜 Historique** | 10 dernières analyses sauvegardées en session |
-| **🛡️ Password** | Protection optionnelle via `APP_PASSWORD` |
+| **🖼️ Génération d'image** | Provider, style, **mode Auto/Custom + amélioration CTLT+** |
+| **📐 Schéma Excalidraw** | Génération d'un diagramme arborescent des concepts + téléchargement .excalidraw |
 
 ### Interface desktop (Tkinter — `gui.py`)
 

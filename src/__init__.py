@@ -8,5 +8,6 @@ from . import analyzer
 from . import fusion
 from . import utils
 from . import image_generator
+from . import excalidraw_generator
 
-__all__ = ['extractor', 'chunker', 'analyzer', 'fusion', 'utils', 'image_generator']
+__all__ = ['extractor', 'chunker', 'analyzer', 'fusion', 'utils', 'image_generator', 'excalidraw_generator']
