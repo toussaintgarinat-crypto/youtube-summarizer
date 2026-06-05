@@ -9,6 +9,7 @@ import threading
 import sys
 import os
 import time
+import webbrowser
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -17,6 +18,7 @@ from src import extractor, chunker, analyzer, fusion
 from src.models import fetch_free_models, fetch_all_models
 from src.image_generator import generate_image, get_providers_list, get_styles_list, build_image_prompt
 from src.excalidraw_generator import generate_diagram as generate_excalidraw
+from src.video_generator import generate_video, get_video_providers_list, build_video_prompt
 from src import updater
 
 # ──────────────────────────────────────────────────────────────
@@ -302,6 +304,36 @@ class App:
         self._excalidraw_status = tk.StringVar(value="")
         ttk.Label(exc_frame, textvariable=self._excalidraw_status,
                   foreground="gray20", font=("TkDefaultFont", 9)).pack(anchor=tk.W, pady=(2, 0))
+
+        # ── Video Generation Section ──────────────────────────────
+        vid_frame = ttk.LabelFrame(root, text="🎬 Générer une vidéo", padding=6)
+        vid_frame.pack(fill=tk.X, padx=12, pady=(0, 10))
+
+        vid_row = ttk.Frame(vid_frame)
+        vid_row.pack(fill=tk.X)
+
+        ttk.Label(vid_row, text="Provider :").pack(side=tk.LEFT)
+        vp_list = get_video_providers_list()
+        vp_names = [f"{p['icon']} {p['name']}" for p in vp_list]
+        self._vid_provider_var = tk.StringVar(value=vp_names[0] if vp_names else "")
+        ttk.Combobox(vid_row, textvariable=self._vid_provider_var,
+                     values=vp_names, width=20, state="readonly").pack(side=tk.LEFT, padx=4)
+
+        self._vid_provider_var.trace_add("write", lambda *_: self._refresh_vid_models())
+
+        ttk.Label(vid_row, text="Modèle :").pack(side=tk.LEFT, padx=(8, 0))
+        self._vid_model_var = tk.StringVar()
+        self._vid_model_combo = ttk.Combobox(vid_row, textvariable=self._vid_model_var,
+                                              width=30, state="readonly")
+        self._vid_model_combo.pack(side=tk.LEFT, padx=4)
+        self._refresh_vid_models()
+
+        ttk.Button(vid_row, text="🎬 Générer", command=self._generate_video).pack(side=tk.LEFT, padx=8)
+
+        self._vid_url_var = tk.StringVar(value="")
+        self._vid_link_lbl = ttk.Label(vid_frame, text="", foreground="blue",
+                                        font=("TkDefaultFont", 9))
+        self._vid_link_lbl.pack(anchor=tk.W, pady=(2, 0))
 
     # ── Helpers ───────────────────────────────────────────────
 
@@ -702,6 +734,79 @@ class App:
         self._excalidraw_status.set(f"❌ {msg}")
         self._set_status("❌ Erreur génération schéma")
 
+    # ── Video Generation Helpers ──────────────────────────────
+
+    def _refresh_vid_models(self):
+        label = self._vid_provider_var.get()
+        vp_list = get_video_providers_list()
+        provider_id = None
+        for p in vp_list:
+            if f"{p['icon']} {p['name']}" == label:
+                provider_id = p['id']
+                break
+        if provider_id:
+            models = next((p['models'] for p in vp_list if p['id'] == provider_id), [])
+            self._vid_model_combo.config(values=models)
+            if models:
+                self._vid_model_var.set(models[0])
+
+    def _generate_video(self):
+        if not self.current_result:
+            messagebox.showwarning("Aucun résultat", "Analysez d'abord une vidéo.")
+            return
+
+        provider_label = self._vid_provider_var.get()
+        vp_list = get_video_providers_list()
+        provider_id = None
+        for p in vp_list:
+            if f"{p['icon']} {p['name']}" == provider_label:
+                provider_id = p['id']
+                break
+        if not provider_id:
+            provider_id = "replicate-video"
+
+        model = self._vid_model_var.get()
+        api_key = self._active_key()
+        rep_key = os.getenv("REPLICATE_API_KEY", "") or os.getenv("STABILITY_API_KEY", "")
+        api_key = rep_key or api_key
+
+        if not api_key:
+            messagebox.showerror("Clé manquante", "Configurez une clé Replicate dans le .env")
+            return
+
+        def _body():
+            try:
+                self._set_status("🎬 Génération vidéo... (1-2 min)")
+                prompt = build_video_prompt(self.current_result, self.current_title)
+                result = generate_video(prompt, provider=provider_id, model=model, api_key=api_key)
+                self.root.after(0, self._show_video_result, result)
+            except Exception as e:
+                self.root.after(0, self._show_video_error, str(e))
+
+        threading.Thread(target=_body, daemon=True).start()
+
+    def _show_video_result(self, result: dict):
+        if result.get('success'):
+            url = result['video_url']
+            self._vid_url_var.set(url)
+            self._vid_link_lbl.config(
+                text=f"✅ Vidéo générée ! Ouvrir le lien :\n{url}",
+                cursor="hand2",
+            )
+            self._set_status("✅ Vidéo générée !")
+            import webbrowser
+            webbrowser.open(url)
+        else:
+            self._vid_link_lbl.config(
+                text=f"❌ {result.get('error', 'Erreur inconnue')}",
+                foreground="red",
+            )
+            self._set_status("❌ Erreur génération vidéo")
+
+    def _show_video_error(self, msg: str):
+        self._vid_link_lbl.config(text=f"❌ {msg}", foreground="red")
+        self._set_status("❌ Erreur génération vidéo")
+
     # ── Image Generation ──────────────────────────────────────
 
     def _generate_image(self):
@@ -927,6 +1032,10 @@ class App:
         # Reset excalidraw
         self._excalidraw_status.set("")
 
+        # Reset video
+        self._vid_url_var.set("")
+        self._vid_link_lbl.config(text="")
+
     def _show_error(self, msg: str):
         self._unlock(self._btn_url)
         self._unlock(self._btn_local)
@@ -991,6 +1100,8 @@ class App:
         self._img_url_var.set("")
         self._img_link_lbl.config(text="")
         self._excalidraw_status.set("")
+        self._vid_url_var.set("")
+        self._vid_link_lbl.config(text="")
         self.url_var.set("")
         self._set_status("Prêt")
 

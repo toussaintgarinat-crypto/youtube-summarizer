@@ -23,6 +23,7 @@ from src.models import fetch_free_models, fetch_all_models
 from src.image_generator import generate_image, get_providers_list, get_styles_list, build_image_prompt, enhance_image_prompt
 from src.excalidraw_generator import generate_diagram as generate_excalidraw
 from src import updater
+from src.video_generator import generate_video, get_video_providers_list, build_video_prompt
 
 
 # ──────────────────────────────────────────────────────────────
@@ -107,11 +108,12 @@ def _save_key_to_env(key_name: str, value: str):
         if env_path.exists():
             with open(env_path, "r") as f:
                 for line in f:
-                    if line.strip().startswith(f"{key_name}="):
+                    stripped = line.strip()
+                    if stripped.startswith(f"{key_name}="):
                         lines.append(f"{key_name}={value}\n")
                         found = True
                     else:
-                        lines.append(line)
+                        lines.append(line if line.endswith("\n") else line + "\n")
         if not found:
             lines.append(f"{key_name}={value}\n")
         with open(env_path, "w") as f:
@@ -131,6 +133,7 @@ def init_session_state():
         "chat_history": [],
         "generated_image_url": "",
         "generated_image_provider": "",
+        "generated_video_url": "",
         "generated_image_prompt": "",
         "excalidraw_json": "",
         "excalidraw_concepts": [],
@@ -764,6 +767,75 @@ def render_image_generation(result: str, title: str):
                      use_container_width=True)
 
 
+def render_video_generation(result: str, title: str):
+    """Render video generation UI after analysis."""
+    with st.expander("🎬 Générer une vidéo à partir du résumé", expanded=False):
+        st.markdown("Générez une courte vidéo basée sur le contenu de la vidéo.")
+
+        vp = get_video_providers_list()
+        vp_options = {f"{p['icon']} {p['name']}": p['id'] for p in vp}
+        col_vp, col_vm = st.columns(2)
+        with col_vp:
+            sel_vp_label = st.selectbox(
+                "Provider vidéo", options=list(vp_options.keys()),
+                key="res_video_provider",
+            )
+        sel_vp = vp_options[sel_vp_label]
+        vp_config = next((p for p in vp if p['id'] == sel_vp), {})
+        with col_vm:
+            sel_vm = st.selectbox(
+                "Modèle", options=vp_config.get("models", []),
+                key="res_video_model",
+            )
+
+        prompt_mode = st.radio(
+            "Source du prompt",
+            ["🔧 Auto (généré depuis le résumé)", "✏️ Personnalisé"],
+            index=0, horizontal=True, key="video_prompt_mode",
+        )
+
+        custom_prompt = ""
+        if "Personnalisé" in prompt_mode:
+            custom_prompt = st.text_area(
+                "Votre prompt vidéo",
+                placeholder="Décrivez la vidéo que vous voulez générer...",
+                key="video_custom_prompt", height=100,
+            )
+
+        if st.button("🎬 Générer la vidéo", type="primary", key="btn_gen_video"):
+            video_prompt = custom_prompt.strip() if "Personnalisé" in prompt_mode and custom_prompt.strip() else build_video_prompt(result, title)
+            api_key = ""
+            for p in vp:
+                if p['id'] == sel_vp:
+                    env_key_name = {"replicate-video": "REPLICATE_API_KEY", "luma": "REPLICATE_API_KEY", "minimax": "REPLICATE_API_KEY"}.get(sel_vp, "REPLICATE_API_KEY")
+                    api_key = os.getenv(env_key_name, "") or st.session_state.get(f"provider_key_replicate", "")
+                    break
+
+            if not api_key:
+                st.error("⚠️ Configurez une clé Replicate dans la sidebar (🔌 Providers images).")
+                st.stop()
+
+            with st.spinner("🎬 Génération vidéo en cours... (cela peut prendre 1-2 minutes)"):
+                vid_result = generate_video(
+                    prompt=video_prompt,
+                    provider=sel_vp,
+                    model=sel_vm,
+                    api_key=api_key,
+                )
+
+            if vid_result.get('success'):
+                video_url = vid_result['video_url']
+                st.session_state.generated_video_url = video_url
+                st.success("✅ Vidéo générée !")
+                st.video(video_url)
+                st.markdown(f"[🌐 Ouvrir la vidéo]({video_url})")
+            else:
+                st.error(f"❌ {vid_result.get('error', 'Erreur inconnue')}")
+
+        if st.session_state.get("generated_video_url") and st.session_state.get("generated_video_url") != st.session_state.get("_last_vid_url"):
+            st.video(st.session_state.generated_video_url)
+
+
 def render_excalidraw_generation(result: str, title: str):
     """Render Excalidraw diagram generation UI after analysis."""
     with st.expander("📐 Générer un schéma conceptuel (Excalidraw)", expanded=False):
@@ -940,6 +1012,9 @@ def show_result(result: str, title: str):
 
     # ── Image generation section ──────────────────────────────
     render_image_generation(result, title)
+
+    # ── Video generation section ──────────────────────────────
+    render_video_generation(result, title)
 
     # ── Excalidraw diagram section ─────────────────────────────
     render_excalidraw_generation(result, title)
@@ -1162,7 +1237,29 @@ def main():
                     val = st.session_state.get(f"provider_key_{pid}", "")
                     if val:
                         _save_key_to_env(env_key, val)
-                        st.success("✅", icon="💾")
+
+    st.sidebar.markdown("---")
+    with st.sidebar.expander("🎬 Génération vidéo", expanded=False):
+        st.caption("Générez une courte vidéo à partir du résumé. Nécessite une clé Replicate.")
+        video_providers = get_video_providers_list()
+        vp_options = {f"{p['icon']} {p['name']}": p['id'] for p in video_providers}
+        selected_vp_label = st.selectbox(
+            "Provider vidéo",
+            options=list(vp_options.keys()),
+            index=0,
+            key="video_provider",
+            label_visibility="collapsed",
+        )
+        st.session_state["selected_video_provider"] = vp_options[selected_vp_label]
+        st.session_state["selected_video_model"] = st.selectbox(
+            "Modèle",
+            options=next(
+                (p['models'] for p in video_providers if p['id'] == vp_options[selected_vp_label]),
+                [],
+            ),
+            key="video_model",
+            label_visibility="collapsed",
+        )
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 🤖 Modèle")
