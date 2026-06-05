@@ -11,3 +11,4 @@ build/
 .eggs/
 .playwright-mcp/
 pwa/icon-*.png
+.opencode/
