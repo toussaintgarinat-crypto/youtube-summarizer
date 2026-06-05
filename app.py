@@ -100,7 +100,7 @@ def check_password() -> bool:
 # ──────────────────────────────────────────────────────────────
 
 def _save_key_to_env(key_name: str, value: str):
-    """Save or update a single key in .env file so it persists across refreshes."""
+    """Save or update a single key in .env so it persists across refreshes."""
     env_path = config.BASE_DIR / ".env"
     try:
         lines = []
@@ -118,6 +118,9 @@ def _save_key_to_env(key_name: str, value: str):
             lines.append(f"{key_name}={value}\n")
         with open(env_path, "w") as f:
             f.writelines(lines)
+        os.environ[key_name] = value
+        if key_name == "OPENROUTER_API_KEY":
+            config.OPENROUTER_API_KEY = value
     except Exception:
         pass
 
