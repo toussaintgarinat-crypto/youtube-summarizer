@@ -3,6 +3,10 @@ import sys
 from pathlib import Path
 from dotenv import load_dotenv
 
+APP_VERSION = "1.0.0"
+REPO_OWNER = "toussaintgarinat-crypto"
+REPO_NAME = "youtube-summarizer"
+
 if getattr(sys, 'frozen', False):
     BASE_DIR = Path(sys._MEIPASS)
 else:

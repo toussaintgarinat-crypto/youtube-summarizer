@@ -17,6 +17,7 @@ from src import extractor, chunker, analyzer, fusion
 from src.models import fetch_free_models, fetch_all_models
 from src.image_generator import generate_image, get_providers_list, get_styles_list, build_image_prompt
 from src.excalidraw_generator import generate_diagram as generate_excalidraw
+from src import updater
 
 # ──────────────────────────────────────────────────────────────
 # Constants
@@ -242,6 +243,8 @@ class App:
                    command=self._copy).pack(side=tk.LEFT, padx=4)
         ttk.Button(exp_frame, text="🗑️ Effacer",
                    command=self._clear).pack(side=tk.RIGHT, padx=4)
+        ttk.Button(exp_frame, text="🔍 Mettre à jour",
+                   command=self._check_update).pack(side=tk.RIGHT, padx=4)
 
         # ── Q&A Section ───────────────────────────────────────
         qa_frame = ttk.LabelFrame(root, text="💬 Poser une question sur la vidéo", padding=6)
@@ -990,6 +993,76 @@ class App:
         self._excalidraw_status.set("")
         self.url_var.set("")
         self._set_status("Prêt")
+
+    # ── Update ─────────────────────────────────────────────────
+
+    def _check_update(self):
+        def _body():
+            self._set_status("🔍 Vérification des mises à jour...")
+            info = updater.check_update()
+            self.root.after(0, self._show_update_result, info)
+
+        threading.Thread(target=_body, daemon=True).start()
+
+    def _show_update_result(self, info: updater.UpdateInfo):
+        if info.error:
+            messagebox.showerror("Mise à jour", info.error)
+            self._set_status("❌ Échec vérification mise à jour")
+            return
+
+        if info.available:
+            msg = (
+                f"Version actuelle : {info.current_version}\n"
+                f"Nouvelle version : {info.latest_version}\n\n"
+                f"Notes de version :\n{info.release_notes[:600]}"
+            )
+            answer = messagebox.askyesno(
+                "Mise à jour disponible",
+                msg + "\n\nSouhaitez-vous mettre à jour ?",
+            )
+            if answer:
+                self._perform_update(info)
+            else:
+                self._set_status("Mise à jour ignorée")
+        else:
+            messagebox.showinfo("Mise à jour", f"✅ Vous êtes à jour !\n\nVersion : {info.current_version}")
+            self._set_status("✅ À jour")
+
+    def _perform_update(self, info: updater.UpdateInfo):
+        mode = updater.detect_install_mode()
+
+        if mode == "git":
+            self._set_status("⬇️ Mise à jour via git...")
+            def _git():
+                ok = updater.perform_git_pull()
+                self.root.after(0, lambda: self._update_done(ok, "git pull terminé" if ok else "Échec git pull"))
+            threading.Thread(target=_git, daemon=True).start()
+
+        elif mode == "desktop":
+            self._set_status("🔗 Ouverture de la page de téléchargement...")
+            import webbrowser
+            webbrowser.open(info.release_url)
+            self._set_status("Prêt")
+
+        elif mode == "docker":
+            self._set_status("⬇️ Pull de l'image Docker...")
+            def _docker():
+                ok = updater.perform_docker_pull()
+                self.root.after(0, lambda: self._update_done(ok, "Image Docker mise à jour" if ok else "Échec pull Docker"))
+            threading.Thread(target=_docker, daemon=True).start()
+
+        else:
+            import webbrowser
+            webbrowser.open(info.release_url)
+            self._set_status("Prêt")
+
+    def _update_done(self, ok: bool, msg: str):
+        if ok:
+            messagebox.showinfo("Mise à jour", f"✅ {msg}\n\nRedémarrez l'application.")
+            self._set_status(f"✅ {msg}")
+        else:
+            messagebox.showerror("Mise à jour", f"❌ {msg}")
+            self._set_status(f"❌ {msg}")
 
 
 # ──────────────────────────────────────────────────────────────

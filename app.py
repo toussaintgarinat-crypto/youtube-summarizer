@@ -22,6 +22,7 @@ from src import tts_generator, local_llm, drive_exporter
 from src.models import fetch_free_models, fetch_all_models
 from src.image_generator import generate_image, get_providers_list, get_styles_list, build_image_prompt, enhance_image_prompt
 from src.excalidraw_generator import generate_diagram as generate_excalidraw
+from src import updater
 
 
 # ──────────────────────────────────────────────────────────────
@@ -90,39 +91,7 @@ def resolve_cookies_path(user_upload) -> str | None:
 # ──────────────────────────────────────────────────────────────
 
 def check_password() -> bool:
-    """Show login screen if APP_PASSWORD is set. Returns True when access is granted."""
-    try:
-        app_password = st.secrets.get("APP_PASSWORD", "") or os.getenv("APP_PASSWORD", "")
-    except Exception:
-        app_password = os.getenv("APP_PASSWORD", "")
-
-    if not app_password:
-        return True
-
-    if st.session_state.get("authenticated"):
-        return True
-
-    st.markdown(
-        "<h1 style='text-align:center;margin-top:80px'>📺 YouTube Summarizer</h1>",
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        "<p style='text-align:center;color:gray'>Entrez le mot de passe pour accéder à l'application</p>",
-        unsafe_allow_html=True,
-    )
-
-    col = st.columns([1, 2, 1])[1]
-    with col:
-        pwd = st.text_input("Mot de passe", type="password", label_visibility="collapsed",
-                            placeholder="Mot de passe...")
-        if st.button("Accéder →", type="primary", use_container_width=True):
-            if pwd == app_password:
-                st.session_state.authenticated = True
-                st.rerun()
-            else:
-                st.error("Mot de passe incorrect.")
-
-    return False
+    return True
 
 
 # ──────────────────────────────────────────────────────────────
@@ -1323,6 +1292,43 @@ def main():
                     st.sidebar.audio(f.read(), format="audio/mp3")
             else:
                 st.sidebar.error(result["error"])
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown(f"### 🔄 Mise à jour")
+    st.sidebar.caption(f"Version actuelle : **{config.APP_VERSION}**")
+    if st.sidebar.button("🔍 Vérifier les mises à jour", key="btn_check_update", use_container_width=True):
+        with st.spinner("Vérification..."):
+            info = updater.check_update()
+        if info.error:
+            st.sidebar.error(info.error)
+        elif info.available:
+            st.sidebar.success(f"Nouvelle version disponible : **{info.latest_version}**")
+            with st.sidebar.expander("📝 Notes de version", expanded=False):
+                st.text(info.release_notes[:800] + ("..." if len(info.release_notes) > 800 else ""))
+            mode = updater.detect_install_mode()
+            if mode == "git":
+                if st.sidebar.button("⬇️ Mettre à jour (git pull)", key="btn_do_update", use_container_width=True):
+                    with st.spinner("Mise à jour en cours..."):
+                        ok = updater.perform_git_pull()
+                    if ok:
+                        st.sidebar.success("✅ Mise à jour terminée ! Redémarrez l'app.")
+                        st.cache_data.clear()
+                    else:
+                        st.sidebar.error("❌ La mise à jour a échoué")
+            elif mode == "desktop":
+                st.sidebar.info(f"Téléchargez la dernière version :\n{info.release_url}")
+            elif mode == "docker":
+                if st.sidebar.button("⬇️ Pull Docker", key="btn_docker_update", use_container_width=True):
+                    with st.spinner("Pull de l'image Docker..."):
+                        ok = updater.perform_docker_pull()
+                    if ok:
+                        st.sidebar.success("✅ Image mise à jour. Redémarrez : `docker compose up -d`")
+                    else:
+                        st.sidebar.error("❌ Échec du pull Docker")
+            else:
+                st.sidebar.markdown(f"Téléchargez la dernière version : [GitHub]({info.release_url})")
+        else:
+            st.sidebar.info("✅ Vous êtes à jour !")
 
     if st.session_state.history:
         st.sidebar.markdown("---")
