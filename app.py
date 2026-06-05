@@ -98,6 +98,28 @@ def check_password() -> bool:
 # Session state
 # ──────────────────────────────────────────────────────────────
 
+def _save_key_to_env(key_name: str, value: str):
+    """Save or update a single key in .env file so it persists across refreshes."""
+    env_path = config.BASE_DIR / ".env"
+    try:
+        lines = []
+        found = False
+        if env_path.exists():
+            with open(env_path, "r") as f:
+                for line in f:
+                    if line.strip().startswith(f"{key_name}="):
+                        lines.append(f"{key_name}={value}\n")
+                        found = True
+                    else:
+                        lines.append(line)
+        if not found:
+            lines.append(f"{key_name}={value}\n")
+        with open(env_path, "w") as f:
+            f.writelines(lines)
+    except Exception:
+        pass
+
+
 def init_session_state():
     defaults = {
         "analysis_result": None,
@@ -1092,13 +1114,24 @@ def main():
     st.sidebar.header("⚙️ Configuration")
 
     st.sidebar.markdown("### 🔑 Clé API OpenRouter")
-    custom_key = st.sidebar.text_input(
-        "Votre clé OpenRouter (optionnel)",
-        type="password",
-        placeholder="sk-or-v1-...",
-        help="Laissez vide pour utiliser la clé par défaut. Obtenez une clé gratuite sur openrouter.ai",
-        key="custom_api_key",
-    )
+    col_key, col_save = st.sidebar.columns([3, 1])
+    with col_key:
+        custom_key = st.text_input(
+            "Votre clé OpenRouter (optionnel)",
+            type="password",
+            placeholder="sk-or-v1-...",
+            help="Laissez vide pour utiliser la clé par défaut. Obtenez une clé gratuite sur openrouter.ai",
+            key="custom_api_key",
+            label_visibility="collapsed",
+        )
+    with col_save:
+        st.write("")
+        if st.button("💾", key="save_openrouter", help="Sauvegarder dans .env (persiste après actualisation)"):
+            if custom_key:
+                _save_key_to_env("OPENROUTER_API_KEY", custom_key)
+                st.success("✅ Sauvegardée !", icon="💾")
+            else:
+                st.error("Entrez une clé d'abord")
 
     key_in_use = custom_key or config.OPENROUTER_API_KEY
     if custom_key:
@@ -1113,13 +1146,23 @@ def main():
         for pid in ["stability-ai", "replicate", "pruna"]:
             label = {"stability-ai": "Stability AI", "replicate": "Replicate", "pruna": "Pruna AI"}[pid]
             placeholder = {"stability-ai": "sk-...", "replicate": "r8_...", "pruna": "Clé Pruna"}[pid]
-            st.text_input(
-                f"{label}",
-                type="password",
-                placeholder=placeholder,
-                key=f"provider_key_{pid}",
-                label_visibility="collapsed",
-            )
+            col_pk, col_ps = st.columns([3, 1])
+            with col_pk:
+                st.text_input(
+                    f"{label}",
+                    type="password",
+                    placeholder=placeholder,
+                    key=f"provider_key_{pid}",
+                    label_visibility="collapsed",
+                )
+            with col_ps:
+                st.write("")
+                env_key = {"stability-ai": "STABILITY_API_KEY", "replicate": "REPLICATE_API_KEY", "pruna": "PRUNA_API_KEY"}[pid]
+                if st.button("💾", key=f"save_{pid}", help="Sauvegarder dans .env"):
+                    val = st.session_state.get(f"provider_key_{pid}", "")
+                    if val:
+                        _save_key_to_env(env_key, val)
+                        st.success("✅", icon="💾")
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 🤖 Modèle")
