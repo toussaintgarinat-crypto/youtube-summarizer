@@ -97,10 +97,10 @@ def get_youtube_transcript(url: str, languages: list = None) -> dict:
     if languages is None:
         languages = ['fr', 'en', 'es', 'de', 'it', 'pt']
 
-    if re.search(r'youtube\.com/(channel|c|user|@)', url):
+    if detect_channel(url):
         raise ValueError(
-            "Cette URL est une chaîne YouTube, pas une vidéo.\n"
-            "Colle l'URL d'une vidéo spécifique (ex: youtube.com/watch?v=...)"
+            "Cette URL est une chaîne YouTube. "
+            "Utilisez l'analyse de chaîne (coller l'URL directement dans le champ URL)."
         )
 
     video_id = extract_youtube_id(url)
@@ -451,11 +451,8 @@ def validate_url(url: str) -> tuple:
 
     url_clean = url.strip()
 
-    if re.search(r'youtube\.com/(channel|c|user|@)', url_clean):
-        return False, (
-            "Cette URL est une chaîne YouTube, pas une vidéo.\n"
-            "Colle l'URL d'une vidéo spécifique (ex: youtube.com/watch?v=...)"
-        )
+    if detect_channel(url_clean):
+        return True, "📺 Chaîne YouTube"
 
     if re.search(r'youtube\.com/(playlist|feed)', url_clean) or detect_playlist(url_clean):
         return True, "📋 Playlist YouTube"
@@ -509,6 +506,75 @@ def extract_playlist_id(url: str) -> Optional[str]:
         if match:
             return match.group(1)
     return None
+
+
+def detect_channel(url: str) -> bool:
+    """Detect if a URL is a YouTube channel (not a single video)."""
+    patterns = [
+        r'youtube\.com/@[\w.-]+',
+        r'youtube\.com/channel/UC[\w-]+',
+        r'youtube\.com/c/[\w.-]+',
+        r'youtube\.com/user/[\w.-]+',
+    ]
+    for pattern in patterns:
+        if re.search(pattern, url):
+            return True
+    return False
+
+
+def get_channel_videos(url: str, cookies_path: Optional[str] = None, max_videos: int = 50) -> tuple[list[dict], str]:
+    """Get videos from a YouTube channel using yt-dlp.
+
+    Returns (videos, channel_name) where videos is a list of {url, title} dicts.
+    """
+    yt_dlp_bin = _find_yt_dlp()
+    if not yt_dlp_bin:
+        raise ValueError(
+            "yt-dlp non installé.\n"
+            "Installez-le avec: pip install yt-dlp"
+        )
+
+    # Get channel display name
+    channel_name = "Chaîne YouTube"
+    try:
+        cmd_name = [yt_dlp_bin, "--print", "%(channel)s", "--flat-playlist", "--playlist-end", "1", url]
+        if cookies_path and os.path.isfile(cookies_path):
+            cmd_name += ["--cookies", cookies_path]
+        result = subprocess.run(cmd_name, capture_output=True, text=True, timeout=30)
+        if result.returncode == 0 and result.stdout.strip():
+            channel_name = result.stdout.strip()
+    except Exception:
+        pass
+
+    # Get video list
+    cmd = [yt_dlp_bin, "--flat-playlist", "--print", "%(url)s\t%(title)s", url]
+    if max_videos:
+        cmd += ["--playlist-end", str(max_videos)]
+    if cookies_path and os.path.isfile(cookies_path):
+        cmd += ["--cookies", cookies_path]
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+    if result.returncode != 0:
+        stderr = result.stderr[-500:] if result.stderr else "Erreur inconnue"
+        raise ValueError(f"Erreur chaîne yt-dlp:\n{stderr}")
+
+    videos = []
+    for line in result.stdout.strip().split('\n'):
+        line = line.strip()
+        if not line or '\t' not in line:
+            continue
+        video_url, video_title = line.split('\t', 1)
+        if video_url:
+            videos.append({
+                'url': video_url,
+                'title': video_title.strip(),
+            })
+
+    if not videos:
+        raise ValueError("Aucune vidéo trouvée sur cette chaîne")
+
+    return videos, channel_name
 
 
 def get_playlist_videos(url: str, cookies_path: Optional[str] = None) -> list[dict]:

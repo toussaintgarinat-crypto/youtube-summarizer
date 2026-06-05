@@ -156,6 +156,15 @@ class App:
                      values=WHISPER_MODELS, width=8,
                      state="readonly").pack(side=tk.LEFT, padx=4)
 
+        # Row 3 : channel scraping
+        row3 = ttk.Frame(cfg)
+        row3.pack(fill=tk.X, pady=3)
+
+        ttk.Label(row3, text="📺  Max vidéos/chaîne :").pack(side=tk.LEFT)
+        self.max_channel_var = tk.IntVar(value=50)
+        ttk.Spinbox(row3, from_=1, to=200, increment=5,
+                    textvariable=self.max_channel_var, width=6).pack(side=tk.LEFT, padx=6)
+
         ttk.Separator(root, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=12)
 
         # ── Input tabs ────────────────────────────────────────
@@ -413,11 +422,86 @@ class App:
             return
         if not self._check_ready():
             return
-        self._lock(self._btn_url)
-        if extractor.detect_playlist(url):
-            threading.Thread(target=self._run_playlist, args=(url,), daemon=True).start()
+        if extractor.detect_channel(url) or extractor.detect_playlist(url):
+            self._set_status("📋 Récupération des vidéos...")
+            threading.Thread(target=self._fetch_and_show_selection, args=(url,), daemon=True).start()
         else:
+            self._lock(self._btn_url)
             threading.Thread(target=self._run_url, args=(url,), daemon=True).start()
+
+    def _fetch_and_show_selection(self, url):
+        """Fetch videos and display selection dialog."""
+        try:
+            is_channel = extractor.detect_channel(url)
+            if is_channel:
+                videos, channel_name = extractor.get_channel_videos(
+                    url, max_videos=self.max_channel_var.get())
+                vtype = "channel"
+                list_title = channel_name
+            else:
+                videos = extractor.get_playlist_videos(url)
+                vtype = "playlist"
+                list_title = "Playlist"
+            self.root.after(0, self._show_selection_dialog, url, videos, vtype, list_title)
+        except Exception as e:
+            self.root.after(0, self._show_error, str(e))
+
+    def _show_selection_dialog(self, url, videos, vtype, list_title):
+        """Display a dialog with a video selection listbox."""
+        win = tk.Toplevel(self.root)
+        win.title(f"Sélection — {list_title[:50]}")
+        win.geometry("620x520")
+        win.transient(self.root)
+        win.grab_set()
+
+        icon = "📺" if vtype == "channel" else "📋"
+        ttk.Label(win, text=f"{icon} {list_title}",
+                  font=("TkDefaultFont", 12, "bold")).pack(pady=(10, 2))
+        ttk.Label(win, text=f"{len(videos)} vidéo(s) trouvée(s) — Sélectionnez celles à analyser").pack(pady=(0, 6))
+
+        frame = ttk.Frame(win)
+        frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=4)
+
+        lb = tk.Listbox(frame, selectmode=tk.MULTIPLE, font=("TkDefaultFont", 10))
+        sb = ttk.Scrollbar(frame, command=lb.yview)
+        lb.configure(yscrollcommand=sb.set)
+        lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        for v in videos:
+            lb.insert(tk.END, v["title"])
+        lb.selection_set(0, tk.END)
+
+        btn_row = ttk.Frame(win)
+        btn_row.pack(fill=tk.X, padx=10, pady=4)
+
+        ttk.Button(btn_row, text="✅ Tout", command=lambda: lb.selection_set(0, tk.END)).pack(side=tk.LEFT, padx=3)
+        ttk.Button(btn_row, text="❌ Rien", command=lambda: lb.selection_clear(0, tk.END)).pack(side=tk.LEFT, padx=3)
+
+        count_lbl = ttk.Label(btn_row, text=f"{lb.size()} sélectionnée(s)")
+        count_lbl.pack(side=tk.RIGHT, padx=6)
+
+        def on_select(_=None):
+            n = len(lb.curselection())
+            count_lbl.config(text=f"{n} sélectionnée(s)")
+        lb.bind("<<ListboxSelect>>", on_select)
+
+        def analyze():
+            indices = lb.curselection()
+            if not indices:
+                messagebox.showwarning("Sélection vide", "Sélectionnez au moins une vidéo.")
+                return
+            selected = [videos[i] for i in indices]
+            win.destroy()
+            if vtype == "channel":
+                threading.Thread(target=self._run_channel, args=(url, selected), daemon=True).start()
+            else:
+                threading.Thread(target=self._run_playlist, args=(url, selected), daemon=True).start()
+
+        bot_row = ttk.Frame(win)
+        bot_row.pack(fill=tk.X, padx=10, pady=10)
+        ttk.Button(bot_row, text="🚀 Analyser la sélection", command=analyze).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bot_row, text="↩ Annuler", command=win.destroy).pack(side=tk.RIGHT, padx=4)
 
     def _start_local(self):
         if not self._local_file_bytes:
@@ -665,7 +749,7 @@ class App:
 
     # ── Playlist ──────────────────────────────────────────────
 
-    def _run_playlist(self, url: str):
+    def _run_playlist(self, url: str, videos=None):
         try:
             model      = self.model_var.get()
             chunk_size = self.chunk_var.get()
@@ -676,8 +760,9 @@ class App:
             lang_out   = self._output_language()
             api_key    = self._active_key()
 
-            self._status("📋 Récupération des vidéos de la playlist...")
-            videos = extractor.get_playlist_videos(url)
+            if videos is None:
+                self._status("📋 Récupération des vidéos de la playlist...")
+                videos = extractor.get_playlist_videos(url)
             total = len(videos)
             playlist_title = f"Playlist ({total} vidéos)"
             all_results = []
@@ -701,6 +786,49 @@ class App:
 
             combined = f"# 📋 Rapport de la playlist : {playlist_title}\n\n" + "\n".join(all_results)
             self.root.after(0, self._show_result, combined, playlist_title)
+
+        except Exception as e:
+            self.root.after(0, self._show_error, str(e))
+
+    def _run_channel(self, url: str, videos=None):
+        try:
+            model      = self.model_var.get()
+            chunk_size = self.chunk_var.get()
+            overlap    = max(100, chunk_size // 10)
+            force_w    = self.force_whisper_var.get()
+            w_lang     = self.whisper_lang_var.get()
+            w_model    = self.whisper_model_var.get()
+            lang_out   = self._output_language()
+            api_key    = self._active_key()
+            max_videos = self.max_channel_var.get()
+
+            if videos is None:
+                self._status("📋 Récupération des vidéos de la chaîne...")
+                videos, channel_name = extractor.get_channel_videos(url, max_videos=max_videos)
+            else:
+                channel_name = f"Chaîne ({len(videos)} vidéos sélectionnées)"
+            total = len(videos)
+            all_results = []
+            warnings = []
+
+            for idx, video in enumerate(videos):
+                video_url = video['url']
+                video_title = video['title']
+                self._status(f"[{idx+1}/{total}] 📥 {video_title}")
+                try:
+                    result, title, w, _ = self._run_single_video(
+                        video_url, model, chunk_size, overlap,
+                        force_w, w_lang, w_model, lang_out, api_key,
+                    )
+                    all_results.append(f"## 📺 Vidéo {idx+1} : {title}\n\n{result}\n\n---\n")
+                    for warn in w:
+                        warnings.append(f"[{video_title}] {warn}")
+                except Exception as e:
+                    warnings.append(f"[{video_title}] Erreur : {str(e)}")
+                    all_results.append(f"## 📺 Vidéo {idx+1} : {video_title}\n\n⚠️ Erreur\n\n---\n")
+
+            combined = f"# 📺 Rapport de la chaîne : {channel_name}\n\n" + "\n".join(all_results)
+            self.root.after(0, self._show_result, combined, channel_name)
 
         except Exception as e:
             self.root.after(0, self._show_error, str(e))

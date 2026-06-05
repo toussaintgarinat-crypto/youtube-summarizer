@@ -143,6 +143,11 @@ def init_session_state():
         "generated_image_prompt": "",
         "excalidraw_json": "",
         "excalidraw_concepts": [],
+        # Video selection state
+        "video_list": None,
+        "video_list_title": "",
+        "video_list_type": "",
+        "video_list_url": "",
         # Background thread state
         "_thread_finished": False,
         "_result_queue": None,
@@ -384,6 +389,7 @@ def process_playlist(
     cookies_path: str = None,
     on_progress=None,
     cancel_event=None,
+    videos: list[dict] | None = None,
 ) -> tuple[str, str, list, str]:
     """Process all videos in a YouTube playlist. Returns combined result."""
     warnings: list[str] = []
@@ -398,8 +404,9 @@ def process_playlist(
         if cancel_event and cancel_event.is_set():
             raise InterruptedError("Analyse annulée par l'utilisateur")
 
-    _progress(2, "📋 Récupération des vidéos de la playlist...")
-    videos = extractor.get_playlist_videos(url, cookies_path=cookies_path)
+    if videos is None:
+        _progress(2, "📋 Récupération des vidéos de la playlist...")
+        videos = extractor.get_playlist_videos(url, cookies_path=cookies_path)
     total = len(videos)
     playlist_id = extractor.extract_playlist_id(url)
     if playlist_id:
@@ -475,6 +482,104 @@ def process_playlist(
 
     _progress(100, "✅ Playlist terminée !")
     return combined, playlist_title, warnings, ""
+
+
+def process_channel(
+    url: str,
+    model: str,
+    chunk_size: int,
+    overlap: int,
+    force_whisper: bool,
+    whisper_lang: str,
+    whisper_model: str,
+    output_language: str = "Français",
+    cookies_path: str = None,
+    max_videos: int = 50,
+    on_progress=None,
+    cancel_event=None,
+    videos: list[dict] | None = None,
+    channel_name: str | None = None,
+) -> tuple[str, str, list, str]:
+    """Process all videos from a YouTube channel. Returns combined result."""
+    warnings: list[str] = []
+    all_results = []
+
+    def _progress(pct: int, msg: str):
+        if on_progress:
+            on_progress(pct, msg)
+
+    def _check_cancel():
+        if cancel_event and cancel_event.is_set():
+            raise InterruptedError("Analyse annulée par l'utilisateur")
+
+    if videos is None:
+        _progress(2, "📋 Récupération des vidéos de la chaîne...")
+        videos, channel_name = extractor.get_channel_videos(url, cookies_path=cookies_path, max_videos=max_videos)
+    elif channel_name is None:
+        channel_name = "Chaîne YouTube"
+    total = len(videos)
+
+    _progress(5, f"📺 Chaîne : {channel_name} — {total} vidéos trouvées")
+
+    for idx, video in enumerate(videos):
+        _check_cancel()
+        video_url = video['url']
+        video_title = video['title']
+        progress_start = 5 + (85 * idx // total)
+        progress_end = 5 + (85 * (idx + 1) // total)
+
+        def _video_progress(pct: int, msg: str):
+            video_pct = progress_start + int((progress_end - progress_start) * pct / 100)
+            _progress(video_pct, f"[{idx+1}/{total}] {msg}")
+
+        _progress(progress_start, f"[{idx+1}/{total}] 📥 Analyse de : {video_title}")
+        try:
+            result, title, w, _ = process_url(
+                video_url, model, chunk_size, overlap,
+                force_whisper, whisper_lang, whisper_model,
+                output_language, cookies_path,
+                on_progress=_video_progress,
+                cancel_event=cancel_event,
+            )
+            all_results.append(f"## 📺 Vidéo {idx+1} : {title}\n\n{result}\n\n---\n")
+            for warn in w:
+                warnings.append(f"[{video_title}] {warn}")
+        except InterruptedError:
+            raise
+        except Exception as e:
+            error_msg = f"[{video_title}] Erreur : {str(e)}"
+            warnings.append(error_msg)
+            all_results.append(f"## 📺 Vidéo {idx+1} : {video_title}\n\n⚠️ {error_msg}\n\n---\n")
+
+    _check_cancel()
+    _progress(92, "🔗 Génération du rapport consolidé...")
+
+    summary_header = f"# 📺 Rapport de la chaîne : {channel_name}\n"
+    summary_header += f"**{total} vidéos analysées**\n\n---\n\n"
+    combined = summary_header + "\n".join(all_results)
+
+    _progress(95, "🤖 Génération du résumé global de la chaîne...")
+    try:
+        channel_summary_prompt = (
+            f"Voici les analyses de {total} vidéos de la chaîne YouTube '{channel_name}'.\n\n"
+            f"{' '.join(all_results[:3])}"
+            f"\n\nGénère un résumé global de cette chaîne en 3-5 phrases, "
+            f"en mettant en évidence les thèmes principaux abordés."
+        )
+        channel_summary = analyzer.call_llm(
+            channel_summary_prompt, model=model, max_tokens=2000,
+            api_key=active_api_key(),
+            fallback_models=[m for m in list(_cached_free_models().keys()) if m != model],
+        )
+        combined = f"# 📺 Rapport de la chaîne : {channel_name}\n\n"
+        combined += f"**{total} vidéos analysées**\n\n"
+        combined += f"## 🌟 Résumé global\n\n{channel_summary}\n\n---\n\n"
+        combined += "\n".join(all_results)
+    except Exception:
+        pass
+
+    _progress(100, "✅ Chaîne terminée !")
+    return combined, channel_name, warnings, ""
 
 
 # ──────────────────────────────────────────────────────────────
@@ -850,6 +955,87 @@ def show_result(result: str, title: str):
 
 
 # ──────────────────────────────────────────────────────────────
+# Video selection UI (before processing)
+# ──────────────────────────────────────────────────────────────
+
+def render_video_selection(
+    videos, title, vtype, url,
+    selected_model, chunk_size, overlap,
+    force_whisper, whisper_lang, whisper_model_size,
+    output_language, cookies_path, max_channel_videos,
+    key_in_use,
+):
+    """Show checkboxes to select which videos to analyse."""
+    if not key_in_use:
+        st.error("⚠️ Entrez votre clé OpenRouter dans la barre latérale.")
+        return
+
+    icon = "📺" if vtype == "channel" else "📋"
+    st.markdown(f"### {icon} {title}")
+    st.caption(f"{len(videos)} vidéo(s) trouvée(s) — cochez celles à analyser")
+
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        if st.button("✅ Tout sélectionner", key="sel_all"):
+            for i in range(len(videos)):
+                st.session_state[f"sel_v_{i}"] = True
+            st.rerun()
+    with col2:
+        if st.button("❌ Tout désélectionner", key="sel_none"):
+            for i in range(len(videos)):
+                st.session_state[f"sel_v_{i}"] = False
+            st.rerun()
+
+    st.markdown("---")
+    selected = []
+    for i, v in enumerate(videos):
+        key = f"sel_v_{i}"
+        if key not in st.session_state:
+            st.session_state[key] = True
+        checked = st.checkbox(v["title"], key=key)
+        if checked:
+            selected.append(i)
+
+    st.markdown("---")
+    n_sel = len(selected)
+    st.markdown(f"**{n_sel}/{len(videos)}** vidéo(s) sélectionnée(s)")
+
+    col_a, col_b, col_c = st.columns([1, 1, 6])
+    with col_a:
+        if n_sel > 0 and st.button(f"🚀 Analyser {n_sel} vidéo(s)", type="primary", key="btn_analyze_sel"):
+            selected_videos = [videos[i] for i in selected]
+            for i in range(len(videos)):
+                st.session_state.pop(f"sel_v_{i}", None)
+            st.session_state.video_list = None
+
+            kwargs = dict(
+                url=url, model=selected_model,
+                chunk_size=chunk_size, overlap=overlap,
+                force_whisper=force_whisper,
+                whisper_lang=whisper_lang, whisper_model=whisper_model_size,
+                output_language=output_language,
+                cookies_path=cookies_path,
+                videos=selected_videos,
+            )
+            if vtype == "channel":
+                kwargs["max_videos"] = max_channel_videos
+                kwargs["channel_name"] = title
+
+            fn = process_channel if vtype == "channel" else process_playlist
+            _start_analysis_thread(url, fn, **kwargs)
+            st.rerun()
+    with col_b:
+        if st.button("↩️ Nouvelle URL", key="btn_back_url"):
+            st.session_state.video_list = None
+            st.session_state.pop("url_input", None)
+            for i in range(len(videos)):
+                st.session_state.pop(f"sel_v_{i}", None)
+            st.rerun()
+    with col_c:
+        st.caption("Les résultats seront combinés en un rapport unique, exportable sur Drive.")
+
+
+# ──────────────────────────────────────────────────────────────
 # Processing UI — polling loop (replaces tabs while a thread runs)
 # ──────────────────────────────────────────────────────────────
 
@@ -1072,6 +1258,15 @@ def main():
         help="tiny = rapide, large = précis.",
     )
 
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 📺 Analyse de chaîne")
+    max_channel_videos = st.sidebar.number_input(
+        "Max vidéos par chaîne",
+        min_value=1, max_value=200,
+        value=50, step=5,
+        help="Nombre maximum de vidéos à analyser lors du scraping d'une chaîne YouTube.",
+    )
+
     free_tag = " 🆓" if selected_model.endswith(":free") else ""
     st.sidebar.markdown(f"**Contexte :** {ctx_limit:,} tokens{free_tag}")
 
@@ -1144,7 +1339,21 @@ def main():
     # ── Processing UI (shown while background thread runs) ───
     if st.session_state.is_processing:
         render_processing_ui()
-        return  # unreachable — render_processing_ui always calls st.rerun()
+        return
+
+    # ── Video selection UI ───────────────────────────────────
+    if st.session_state.get("video_list"):
+        render_video_selection(
+            st.session_state.video_list,
+            st.session_state.video_list_title,
+            st.session_state.video_list_type,
+            st.session_state.video_list_url,
+            selected_model, chunk_size, overlap,
+            force_whisper, whisper_lang, whisper_model_size,
+            output_language, cookies_path, max_channel_videos,
+            key_in_use,
+        )
+        return
 
     # ── Tabs ─────────────────────────────────────────────────
     tab_url, tab_local = st.tabs(["🔗 URL Vidéo", "📁 Fichier Local"])
@@ -1155,7 +1364,7 @@ def main():
         with col_input:
             url_input = st.text_input(
                 "URL de la vidéo",
-                placeholder="https://www.youtube.com/watch?v=...  |  Twitch  |  Vimeo  |  ...",
+                placeholder="https://www.youtube.com/watch?v=...  |  Chaîne YouTube (@...)  |  Twitch  |  Vimeo  |  ...",
                 key="url_input",
             )
         with col_btn:
@@ -1173,15 +1382,31 @@ def main():
         if analyze_url_btn and url_input:
             if not key_in_use:
                 st.error("⚠️ Entrez votre clé OpenRouter dans la barre latérale.")
+            elif extractor.detect_channel(url_input):
+                with st.spinner("📋 Récupération des vidéos de la chaîne..."):
+                    try:
+                        videos, channel_name = extractor.get_channel_videos(
+                            url_input, cookies_path=cookies_path, max_videos=max_channel_videos,
+                        )
+                    except Exception as e:
+                        st.error(f"❌ {e}")
+                        st.stop()
+                st.session_state.video_list = videos
+                st.session_state.video_list_title = channel_name
+                st.session_state.video_list_type = "channel"
+                st.session_state.video_list_url = url_input
+                st.rerun()
             elif extractor.detect_playlist(url_input):
-                _start_analysis_thread(
-                    url_input,
-                    process_playlist,
-                    url_input, selected_model, chunk_size, overlap,
-                    force_whisper, whisper_lang, whisper_model_size,
-                    output_language, cookies_path,
-                )
-                st.info("📋 Playlist détectée — analyse de toutes les vidéos...")
+                with st.spinner("📋 Récupération des vidéos de la playlist..."):
+                    try:
+                        videos = extractor.get_playlist_videos(url_input, cookies_path=cookies_path)
+                    except Exception as e:
+                        st.error(f"❌ {e}")
+                        st.stop()
+                st.session_state.video_list = videos
+                st.session_state.video_list_title = "Playlist"
+                st.session_state.video_list_type = "playlist"
+                st.session_state.video_list_url = url_input
                 st.rerun()
             else:
                 is_valid, _ = extractor.validate_url(url_input)

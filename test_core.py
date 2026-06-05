@@ -16,6 +16,7 @@ from src.extractor import (
     extract_vimeo_id,
     validate_url,
     get_supported_platforms,
+    detect_channel,
 )
 
 
@@ -43,6 +44,20 @@ class TestDetectPlatform(unittest.TestCase):
 
     def test_tiktok_unknown(self):
         self.assertEqual(detect_platform("https://www.tiktok.com/@user/video/123"), "unknown")
+
+
+class TestDetectChannel(unittest.TestCase):
+    def test_youtube_channel(self):
+        self.assertTrue(detect_channel("https://www.youtube.com/channel/UC123abc"))
+        self.assertTrue(detect_channel("https://www.youtube.com/@SomeChannel"))
+        self.assertTrue(detect_channel("https://www.youtube.com/c/SomeChannel"))
+        self.assertTrue(detect_channel("https://www.youtube.com/user/SomeUser"))
+
+    def test_not_a_channel(self):
+        self.assertFalse(detect_channel("https://www.youtube.com/watch?v=abc123"))
+        self.assertFalse(detect_channel("https://www.youtube.com/playlist?list=PL123"))
+        self.assertFalse(detect_channel("https://vimeo.com/123456"))
+        self.assertFalse(detect_channel(""))
 
 
 class TestExtractYoutubeId(unittest.TestCase):
@@ -126,21 +141,21 @@ class TestValidateUrl(unittest.TestCase):
         ok, msg = validate_url("   ")
         self.assertFalse(ok)
 
-    def test_youtube_channel_rejected(self):
+    def test_youtube_channel_accepted(self):
         ok, msg = validate_url("https://www.youtube.com/channel/UCxxx")
-        self.assertFalse(ok)
+        self.assertTrue(ok)
 
-    def test_youtube_user_rejected(self):
+    def test_youtube_user_accepted(self):
         ok, msg = validate_url("https://www.youtube.com/user/SomeUser")
-        self.assertFalse(ok)
+        self.assertTrue(ok)
 
-    def test_youtube_at_channel_rejected(self):
+    def test_youtube_at_channel_accepted(self):
         ok, msg = validate_url("https://www.youtube.com/@SomeChannel")
-        self.assertFalse(ok)
+        self.assertTrue(ok)
 
-    def test_youtube_playlist_rejected(self):
+    def test_youtube_playlist_accepted(self):
         ok, msg = validate_url("https://www.youtube.com/playlist?list=PL123")
-        self.assertFalse(ok)
+        self.assertTrue(ok)
 
     def test_unknown_platform_rejected(self):
         ok, msg = validate_url("https://example.com/video/123")
