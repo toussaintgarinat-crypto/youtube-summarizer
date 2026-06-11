@@ -917,7 +917,8 @@ def render_excalidraw_generation(result: str, title: str):
 # ──────────────────────────────────────────────────────────────
 
 def _safe_filename(title: str, suffix: str) -> str:
-    safe = re.sub(r'[^\w\s-]', '', title).strip()[:40] or "export"
+    safe = re.sub(r'[^\w .-]', '', title)
+    safe = re.sub(r'\s+', ' ', safe).strip()[:40] or "export"
     return f"{safe}_{suffix}"
 
 
