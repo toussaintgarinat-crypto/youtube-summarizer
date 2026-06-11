@@ -862,11 +862,10 @@ def render_video_generation(result: str, title: str):
 
 
 def _render_excalidraw_download(title: str):
-    ext = ".excalidraw"
     st.download_button(
         "💾 Télécharger .excalidraw",
         data=st.session_state.excalidraw_json,
-        file_name=f"{title[:40]}_schema{ext}",
+        file_name=_safe_filename(title, "schema.excalidraw"),
         mime="application/json",
         key="dl_excalidraw",
     )
@@ -917,27 +916,37 @@ def render_excalidraw_generation(result: str, title: str):
 # Result display
 # ──────────────────────────────────────────────────────────────
 
+def _safe_filename(title: str, suffix: str) -> str:
+    safe = re.sub(r'[^\w\s-]', '', title).strip()[:40] or "export"
+    return f"{safe}_{suffix}"
+
+
 def show_result(result: str, title: str):
     st.markdown("---")
     st.markdown(f"## 📝 {title}")
 
     col_md, col_pdf = st.columns(2)
     with col_md:
-        st.download_button(
-            label="💾 Télécharger Markdown",
-            data=result,
-            file_name=f"{title[:40]}_analyse.md",
-            mime="text/markdown",
-        )
+        try:
+            st.download_button(
+                label="💾 Télécharger Markdown",
+                data=result or "",
+                file_name=_safe_filename(title, "analyse.md"),
+                mime="text/markdown",
+                key="dl_md_result",
+            )
+        except Exception as e:
+            st.caption(f"Markdown non disponible : {e}")
     with col_pdf:
         try:
             from src.pdf_exporter import export_to_pdf
-            pdf_bytes = export_to_pdf(result, title)
+            pdf_bytes = export_to_pdf(result or "", title or "export")
             st.download_button(
                 label="📄 Télécharger PDF",
                 data=pdf_bytes,
-                file_name=f"{title[:40]}_analyse.pdf",
+                file_name=_safe_filename(title, "analyse.pdf"),
                 mime="application/pdf",
+                key="dl_pdf_result",
             )
         except Exception as e:
             st.caption(f"PDF non disponible : {e}")
