@@ -12,7 +12,7 @@ if getattr(sys, 'frozen', False):
 else:
     BASE_DIR = Path(__file__).parent
 
-load_dotenv(BASE_DIR / ".env")
+load_dotenv(BASE_DIR / ".env", override=True)
 
 def _get(key: str, default: str = "") -> str:
     """Read from env, then fall back to Streamlit secrets if available."""

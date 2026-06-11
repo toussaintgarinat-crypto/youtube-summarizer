@@ -158,7 +158,13 @@ def init_session_state():
 
 def active_api_key() -> str:
     """Return the user's custom key if set, otherwise the default from config/secrets."""
-    return st.session_state.get("custom_api_key", "") or config.OPENROUTER_API_KEY
+    try:
+        custom = st.session_state.get("custom_api_key", "")
+        if custom:
+            return custom
+    except Exception:
+        pass
+    return config.OPENROUTER_API_KEY
 
 
 def get_provider_api_key(provider_id: str) -> str:
@@ -180,14 +186,14 @@ def run_pipeline(
     output_language: str = "Français",
     on_progress=None,
     cancel_event=None,
+    api_key: str = "",
+    use_local: bool = False,
+    local_model: str = "llama3.2",
+    fallbacks: list = None,
 ) -> str:
     """Chunk → Analyze → Fuse. Reports progress via on_progress(pct: int, msg: str)."""
-    use_local = st.session_state.get("use_local_llm", False)
-    local_model = st.session_state.get("local_llm_model", "llama3.2")
-
-    api_key = active_api_key()
-    free_models = list(_cached_free_models().keys())
-    fallbacks = [m for m in free_models if m != model]
+    api_key = api_key or active_api_key()
+    fallbacks = fallbacks or []
 
     def _progress(pct: int, msg: str):
         if on_progress:
@@ -201,15 +207,16 @@ def run_pipeline(
     chunks = chunker.chunk_transcript(transcript, max_tokens=chunk_size, overlap_tokens=overlap, model=model)
     chunk_info = chunker.get_chunk_count_info(chunks)
     total_chunks = len(chunks)
-    _progress(15, f"📊 {chunk_info}")
-    time.sleep(1.5)
-    _progress(15, f"📊 {chunk_info} — analyse de {total_chunks} lot(s)…")
+    _progress(10, f"📊 {chunk_info}")
+    time.sleep(2.0)
+    _progress(15, f"🤖 Analyse de {total_chunks} lot(s) par l'IA…")
     time.sleep(1.0)
 
     analyses = []
     for i, chunk in enumerate(chunks):
         _check_cancel()
-        _progress(20 + 70 * (i + 1) // total_chunks, f"🤖 Analyse chunk {i + 1}/{total_chunks} ({chunk.get('token_count', 0)} tokens)...")
+        pct = 20 + int(70 * (i + 1) / total_chunks) if total_chunks > 0 else 90
+        _progress(pct, f"🧠 Chunk {i+1}/{total_chunks} ({chunk.get('tokens', 0)} tokens) — analyse en cours...")
         if use_local:
             analyses.append(local_llm.analyze_chunk_local(
                 chunk["text"], video_title, model=local_model, output_language=output_language,
@@ -263,6 +270,7 @@ def process_url(
     cookies_path: str = None,
     on_progress=None,
     cancel_event=None,
+    api_key: str = "",
 ) -> tuple[str, str, list, str]:
     """Fetch transcript (or Whisper fallback) then run pipeline. Returns (result, title, warnings, transcript_text)."""
     warnings: list[str] = []
@@ -279,7 +287,11 @@ def process_url(
 
     if not force_whisper:
         _progress(5, "📥 Extraction du transcript...")
-        data = _cached_transcript(url)
+        try:
+            data = extractor.get_transcript(url)
+        except Exception as e:
+            data = None
+            warnings.append(f"⚠️ Erreur de transcript ({e}) — passage en mode Whisper...")
         if data and data.get("transcript"):
             transcript_data = data
         elif data:
@@ -305,17 +317,18 @@ def process_url(
     method = transcript_data.get("method", "transcript")
     method_label = "Whisper" if "whisper" in method else "transcript"
 
-    _progress(30, f"📺 {title} — {duration:.1f} min — {len(transcript)} segments ({method_label})")
+    _progress(35, f"📺 {title} — {duration:.1f} min — {len(transcript)} segments ({method_label})")
     _check_cancel()
 
     def _pipeline_progress(pct: int, msg: str):
-        on_progress(30 + int(pct * 0.70), msg)
+        on_progress(35 + int(pct * 0.65), msg)
 
     result = run_pipeline(
         transcript, title, model, chunk_size, overlap,
         output_language=output_language,
         on_progress=_pipeline_progress if on_progress else None,
         cancel_event=cancel_event,
+        api_key=api_key,
     )
     transcript_text = _transcript_to_text(transcript)
     return result, title, warnings, transcript_text
@@ -332,6 +345,7 @@ def process_local_file(
     output_language: str = "Français",
     on_progress=None,
     cancel_event=None,
+    api_key: str = "",
 ) -> tuple[str, str, list, str]:
     """Transcribe local audio/video file then run pipeline. Returns (result, title, warnings, transcript_text)."""
     from src.whisper_transcriber import transcribe_local_file
@@ -369,6 +383,7 @@ def process_local_file(
         output_language=output_language,
         on_progress=_pipeline_progress if on_progress else None,
         cancel_event=cancel_event,
+        api_key=api_key,
     )
     transcript_text = _transcript_to_text(transcript)
     return result, title, warnings, transcript_text
@@ -387,6 +402,7 @@ def process_playlist(
     on_progress=None,
     cancel_event=None,
     videos: list[dict] | None = None,
+    api_key: str = "",
 ) -> tuple[str, str, list, str]:
     """Process all videos in a YouTube playlist. Returns combined result."""
     warnings: list[str] = []
@@ -440,6 +456,7 @@ def process_playlist(
                 output_language, cookies_path,
                 on_progress=_video_progress,
                 cancel_event=cancel_event,
+                api_key=api_key,
             )
             all_results.append(f"## 📺 Vidéo {idx+1} : {title}\n\n{result}\n\n---\n")
             for warn in w:
@@ -467,8 +484,8 @@ def process_playlist(
         )
         playlist_summary = analyzer.call_llm(
             playlist_summary_prompt, model=model, max_tokens=2000,
-            api_key=active_api_key(),
-            fallback_models=[m for m in list(_cached_free_models().keys()) if m != model],
+            api_key=api_key,
+            fallback_models=[],
         )
         combined = f"# 📋 Rapport de la playlist : {playlist_title}\n\n"
         combined += f"**{total} vidéos analysées**\n\n"
@@ -496,6 +513,7 @@ def process_channel(
     cancel_event=None,
     videos: list[dict] | None = None,
     channel_name: str | None = None,
+    api_key: str = "",
 ) -> tuple[str, str, list, str]:
     """Process all videos from a YouTube channel. Returns combined result."""
     warnings: list[str] = []
@@ -537,6 +555,7 @@ def process_channel(
                 output_language, cookies_path,
                 on_progress=_video_progress,
                 cancel_event=cancel_event,
+                api_key=api_key,
             )
             all_results.append(f"## 📺 Vidéo {idx+1} : {title}\n\n{result}\n\n---\n")
             for warn in w:
@@ -565,8 +584,8 @@ def process_channel(
         )
         channel_summary = analyzer.call_llm(
             channel_summary_prompt, model=model, max_tokens=2000,
-            api_key=active_api_key(),
-            fallback_models=[m for m in list(_cached_free_models().keys()) if m != model],
+            api_key=api_key,
+            fallback_models=[],
         )
         combined = f"# 📺 Rapport de la chaîne : {channel_name}\n\n"
         combined += f"**{total} vidéos analysées**\n\n"
@@ -606,12 +625,15 @@ def _start_analysis_thread(source: str, fn, *args, **kwargs):
         _set_progress(min(pct, 100), msg)
 
     def _body():
+        import traceback as _tb
         try:
+            _set_progress(2, "🚀 Thread démarré...")
             result, title, w, transcript_text = fn(*args, on_progress=_on_progress, cancel_event=cancel_ev, **kwargs)
             result_q.put(("ok", result, title, w, transcript_text))
         except InterruptedError:
             result_q.put(("cancelled", "", "", "", []))
         except Exception as e:
+            _tb.print_exc()
             result_q.put(("error", str(e), "", "", ""))
 
     _set_progress(0, "Démarrage...")
@@ -1085,6 +1107,7 @@ def render_video_selection(
                 output_language=output_language,
                 cookies_path=cookies_path,
                 videos=selected_videos,
+                api_key=key_in_use,
             )
             if vtype == "channel":
                 kwargs["max_videos"] = max_channel_videos
@@ -1114,7 +1137,20 @@ def render_processing_ui():
     prog, msg = _get_progress()
 
     st.progress(prog / 100)
-    st.markdown(f"<h4 style='text-align: center; color: #555;'>{msg}</h4>", unsafe_allow_html=True)
+    st.markdown(f"<h3 style='text-align: center; color: #FF4B4B;'>{msg}</h3>", unsafe_allow_html=True)
+
+    # Show chunk progress if available
+    if "chunk" in msg.lower():
+        try:
+            import re
+            match = re.search(r'chunk (\d+)/(\d+)', msg.lower())
+            if match:
+                current = int(match.group(1))
+                total = int(match.group(2))
+                st.caption(f"Progression des chunks : {current}/{total}")
+                st.progress(current / total)
+        except Exception:
+            pass
 
     if st.button("🛑 Annuler l'analyse", type="secondary"):
         cancel_ev = st.session_state._cancel_event
@@ -1570,6 +1606,7 @@ def main():
                     url_input, selected_model, chunk_size, overlap,
                     need_whisper, whisper_lang, whisper_model_size,
                     output_language, cookies_path,
+                    api_key=key_in_use,
                 )
                 st.rerun()
 
@@ -1603,6 +1640,7 @@ def main():
                     selected_model, chunk_size, overlap,
                     whisper_lang, whisper_model_size,
                     output_language,
+                    api_key=key_in_use,
                 )
                 st.rerun()
 
