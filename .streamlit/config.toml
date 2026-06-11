@@ -6,3 +6,6 @@ textColor = "#FAFAFA"
 
 [server]
 maxUploadSize = 500
+
+[browser]
+gatherUsageStats = false

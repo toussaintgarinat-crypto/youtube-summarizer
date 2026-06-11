@@ -861,24 +861,23 @@ def render_video_generation(result: str, title: str):
             st.video(st.session_state.generated_video_url)
 
 
+def _render_excalidraw_download(title: str):
+    ext = ".excalidraw"
+    st.download_button(
+        "💾 Télécharger .excalidraw",
+        data=st.session_state.excalidraw_json,
+        file_name=f"{title[:40]}_schema{ext}",
+        mime="application/json",
+        key="dl_excalidraw",
+    )
+
+
 def render_excalidraw_generation(result: str, title: str):
     """Render Excalidraw diagram generation UI after analysis."""
     with st.expander("📐 Générer un schéma conceptuel (Excalidraw)", expanded=False):
         st.markdown("Générez un diagramme arborescent des concepts clés de la vidéo, éditable dans [Excalidraw](https://excalidraw.com).")
 
-        col_gen, col_dl = st.columns([1, 1])
-        with col_gen:
-            gen_btn = st.button("📐 Générer le schéma", type="primary", key="btn_excalidraw")
-        with col_dl:
-            if st.session_state.excalidraw_json:
-                ext = ".excalidraw"
-                st.download_button(
-                    "💾 Télécharger .excalidraw",
-                    data=st.session_state.excalidraw_json,
-                    file_name=f"{title[:40]}_schema{ext}",
-                    mime="application/json",
-                    key="dl_excalidraw",
-                )
+        gen_btn = st.button("📐 Générer le schéma", type="primary", key="btn_excalidraw")
 
         if gen_btn:
             with st.status("🧠 Génération du schéma conceptuel…", expanded=True) as status:
@@ -896,7 +895,7 @@ def render_excalidraw_generation(result: str, title: str):
                     st.write(f"✅ {n} concepts extraits")
                     st.write("📐 Génération du diagramme…")
                     status.update(label=f"✅ Schéma généré ({n} concepts)", state="complete")
-                    st.success(f"📥 Téléchargez le fichier .excalidraw puis ouvrez-le sur https://excalidraw.com")
+                    _render_excalidraw_download(title)
                     with st.expander("👁️ Aperçu des concepts extraits", expanded=True):
                         for c in diag.get("concepts", []):
                             parent = next(
@@ -911,6 +910,7 @@ def render_excalidraw_generation(result: str, title: str):
         if st.session_state.excalidraw_json and not gen_btn:
             n = len(st.session_state.excalidraw_concepts)
             st.success(f"✅ Schéma prêt ({n} concepts) — téléchargez le fichier ci-dessus")
+            _render_excalidraw_download(title)
 
 
 # ──────────────────────────────────────────────────────────────

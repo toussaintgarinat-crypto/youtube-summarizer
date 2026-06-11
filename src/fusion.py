@@ -289,6 +289,13 @@ def fusion_analyses(
 
     # ── 4. Assemble final report ─────────────────────────────
     lang_line = f"*Langue Source :* {output_language}"
+
+    # Strip duplicate "## 📝 Résumé Détaillé" header if the LLM already generated it
+    body = detailed_summary.strip()
+    for prefix in ["## 📝 Résumé Détaillé", "## 📝 Résumé Détaille"]:
+        if body.startswith(prefix):
+            body = body[len(prefix):].strip()
+
     report_parts = [
         f"# 📺 ANALYSE VIDÉO : {video_title}",
         lang_line + "\n",
@@ -299,7 +306,7 @@ def fusion_analyses(
         _build_insights_list(selected_insights),
         "",
         f"## 📝 Résumé Détaillé",
-        detailed_summary.strip(),
+        body,
     ]
 
     return "\n\n".join(p for p in report_parts if p)
