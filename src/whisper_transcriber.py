@@ -282,23 +282,27 @@ def transcribe_audio(
     """
     # 1) OpenAI Whisper API
     effective_key = openai_api_key or getattr(config, "OPENAI_API_KEY", "")
+    openai_error = None
     if effective_key:
         try:
             return transcribe_with_whisper_api(audio_path, language, api_key=effective_key)
-        except Exception:
-            pass
+        except Exception as e:
+            openai_error = str(e)
 
     # 2) Local whisper (gratuit, nécessite `pip install openai-whisper`)
     try:
         import whisper
     except ImportError:
-        raise ValueError(
-            "Aucune méthode de transcription disponible.\n\n"
+        msg = "Aucune méthode de transcription disponible.\n\n"
+        if openai_error:
+            msg += f"Erreur OpenAI Whisper : {openai_error}\n\n"
+        msg += (
             "Solutions :\n"
-            "1. Installez whisper local : pip install openai-whisper\n"
-            "2. Ou entrez une clé OpenAI dans le champ dédié (Whisper API).\n"
+            "1. Installez whisper local (gratuit) : pip install openai-whisper\n"
+            "2. Ou corrigez l'erreur OpenAI ci-dessus (vérifiez l'accès Whisper API)\n"
             "3. Vérifiez que le fichier audio est valide."
         )
+        raise ValueError(msg)
 
     return transcribe_with_local_whisper(audio_path, model_size=model_size, language=language)
 
