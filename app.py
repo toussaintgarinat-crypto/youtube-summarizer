@@ -209,7 +209,9 @@ def run_pipeline(
 ) -> str:
     """Chunk → Analyze → Fuse. Reports progress via on_progress(pct: int, msg: str)."""
     api_key = api_key or active_api_key()
-    fallbacks = fallbacks or []
+    if fallbacks is None and provider == "openrouter":
+        free_models = list(_cached_free_models().keys())
+        fallbacks = [m for m in free_models if m != model]
 
     def _progress(pct: int, msg: str):
         if on_progress:

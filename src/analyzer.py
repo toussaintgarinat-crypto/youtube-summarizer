@@ -41,6 +41,11 @@ class RateLimitError(Exception):
     pass
 
 
+class ModelNotFoundError(Exception):
+    """Raised when a model is not found or unavailable — triggers fallback to next model."""
+    pass
+
+
 def _call_single_model(
     prompt: str,
     model: str,
@@ -78,6 +83,14 @@ def _call_single_model(
                     "Accès refusé (403). Vérifiez votre clé sur openrouter.ai/keys\n"
                     "et choisissez un modèle gratuit (suffixe ':free')."
                 )
+            if response.status_code == 404:
+                # Model not found / unavailable — try next model
+                try:
+                    err_msg = response.json().get("error", {}).get("message", "")
+                except Exception:
+                    err_msg = response.text[:200]
+                raise ModelNotFoundError(model, err_msg)
+
             if response.status_code == 429:
                 try:
                     retry_after = int(response.json()["error"]["metadata"].get("retry_after_seconds", 0))
@@ -100,6 +113,8 @@ def _call_single_model(
                     )
                     time.sleep(wait_time)
                     continue
+                if code == 404:
+                    raise ModelNotFoundError(model, err.get("message", str(err)))
                 raise ValueError(f"Erreur modèle ({code}) : {err.get('message', str(err))}")
 
             content = data["choices"][0]["message"]["content"]
@@ -225,12 +240,12 @@ def call_llm(
         for m in models_to_try:
             try:
                 return _call_open_code_go(prompt, m, max_tokens, temperature, active_key)
-            except RateLimitError:
+            except (RateLimitError, ModelNotFoundError):
                 last_err = m
                 continue
         tried = ", ".join(models_to_try)
         raise ValueError(
-            f"Tous les modèles sont surchargés ({tried}). Réessayez dans quelques minutes."
+            f"Aucun modèle disponible ({tried}). Réessayez avec un autre modèle."
         )
     else:
         active_key = api_key or config.OPENROUTER_API_KEY
@@ -241,12 +256,12 @@ def call_llm(
         for m in models_to_try:
             try:
                 return _call_single_model(prompt, m, max_tokens, temperature, active_key)
-            except RateLimitError:
+            except (RateLimitError, ModelNotFoundError):
                 last_err = m
                 continue
         tried = ", ".join(models_to_try)
         raise ValueError(
-            f"Tous les modèles sont surchargés ({tried}).\n"
+            f"Aucun modèle disponible ({tried}).\n"
             "Réessayez dans quelques minutes ou ajoutez des crédits sur openrouter.ai."
         )
 
