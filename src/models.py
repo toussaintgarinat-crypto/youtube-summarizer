@@ -1,7 +1,8 @@
-"""Fetch and filter available models from OpenRouter API."""
+"""Fetch and filter available models from OpenRouter API + OpenCode Go."""
 
 import requests
 from typing import Optional
+import config
 
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
@@ -83,3 +84,18 @@ def fetch_all_models(timeout: int = 5) -> dict[str, int]:
 
     except Exception:
         return {**FALLBACK_FREE_MODELS, **FALLBACK_PAID_MODELS}
+
+
+def fetch_open_code_go_models(timeout: int = 5) -> dict[str, int]:
+    """Return {model_id: context_length} for all OpenCode Go models."""
+    try:
+        resp = requests.get(f"{config.OPENCODE_GO_BASE_URL}/models", timeout=timeout)
+        resp.raise_for_status()
+        models = resp.json().get("data", [])
+        result = {}
+        for m in models:
+            model_id = m["id"]
+            result[model_id] = config.OPENCODE_GO_MODELS.get(model_id, 131072)
+        return result if result else config.OPENCODE_GO_MODELS
+    except Exception:
+        return config.OPENCODE_GO_MODELS

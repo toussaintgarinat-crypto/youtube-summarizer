@@ -99,7 +99,7 @@ Résumé :
 Concepts :"""
 
 
-def _extract_via_llm(text: str, api_key: str, model: str, use_local: bool = False, local_model: Optional[str] = None) -> list:
+def _extract_via_llm(text: str, api_key: str, model: str, use_local: bool = False, local_model: Optional[str] = None, provider: str = "openrouter") -> list:
     prompt = PROMPT_TEMPLATE.format(text=text[:4000])
     try:
         if use_local:
@@ -110,6 +110,7 @@ def _extract_via_llm(text: str, api_key: str, model: str, use_local: bool = Fals
             response = call_llm(
                 prompt, model=model, api_key=api_key,
                 max_tokens=500, temperature=0.3,
+                provider=provider,
             )
     except Exception:
         return []
@@ -279,8 +280,9 @@ def generate_diagram(
     model: Optional[str] = None,
     use_local: bool = False,
     local_model: Optional[str] = None,
+    provider: str = "openrouter",
 ) -> dict:
-    labels = _extract_via_llm(analysis_text, api_key, model, use_local=use_local, local_model=local_model)
+    labels = _extract_via_llm(analysis_text, api_key, model, use_local=use_local, local_model=local_model, provider=provider)
 
     if len(labels) < 2:
         labels = _extract_from_markdown(analysis_text)

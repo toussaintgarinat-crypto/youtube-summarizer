@@ -1,4 +1,4 @@
-"""YouTube Analyzer - OpenRouter LLM Integration"""
+"""YouTube Analyzer - OpenRouter + OpenCode Go LLM Integration"""
 
 import json
 import sys
@@ -119,6 +119,91 @@ def _call_single_model(
     raise RateLimitError(model)
 
 
+def _call_open_code_go(
+    prompt: str,
+    model: str,
+    max_tokens: int,
+    temperature: float,
+    api_key: str,
+) -> str:
+    """Call OpenCode Go API. Supports both OpenAI-compatible and Anthropic-compatible endpoints."""
+    is_anthropic = model in config.OPENCODE_GO_ANTHROPIC_MODELS
+
+    if is_anthropic:
+        url = f"{config.OPENCODE_GO_BASE_URL}/messages"
+        headers = {
+            "x-api-key": api_key,
+            "Content-Type": "application/json",
+            "anthropic-version": "2023-06-01",
+        }
+        payload = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if temperature > 0:
+            payload["temperature"] = temperature
+    else:
+        url = f"{config.OPENCODE_GO_BASE_URL}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=180)
+
+            if response.status_code == 401:
+                raise ValueError(
+                    "Clé API OpenCode Go non reconnue (401).\n"
+                    "Souscrivez sur opencode.ai/go et vérifiez votre clé."
+                )
+            if response.status_code == 402:
+                raise ValueError(
+                    "Crédit OpenCode Go épuisé ou abonnement expiré.\n"
+                    "Vérifiez votre abonnement sur opencode.ai/auth."
+                )
+            if response.status_code == 429:
+                wait_time = (attempt + 1) * 15
+                time.sleep(wait_time)
+                continue
+
+            response.raise_for_status()
+            data = response.json()
+
+            if is_anthropic:
+                content_blocks = data.get("content", [])
+                text_parts = [b.get("text", "") for b in content_blocks if b.get("type") == "text"]
+                content = "\n".join(text_parts)
+            else:
+                choices = data.get("choices", [])
+                if not choices:
+                    raise ValueError("Le modèle a retourné une réponse vide.")
+                content = choices[0].get("message", {}).get("content", "")
+
+            if not content:
+                raise ValueError(
+                    "Le modèle a retourné une réponse vide. Essayez un autre modèle."
+                )
+            return content
+
+        except requests.exceptions.RequestException as e:
+            if attempt < max_retries - 1:
+                time.sleep(5)
+                continue
+            raise ValueError(f"Erreur réseau : {str(e)}")
+
+    raise RateLimitError(model)
+
+
 def call_llm(
     prompt: str,
     model: str = None,
@@ -126,29 +211,44 @@ def call_llm(
     temperature: float = 0.7,
     api_key: str = None,
     fallback_models: list = None,
+    provider: str = "openrouter",
 ) -> str:
-    """Call OpenRouter. If model is rate-limited, auto-fallback to next free model."""
+    """Call LLM via OpenRouter or OpenCode Go. Auto-fallback to next model if rate-limited."""
     model = model or config.DEFAULT_MODEL
-    active_key = api_key or config.OPENROUTER_API_KEY
 
-    if not active_key:
-        raise ValueError("Clé OpenRouter manquante. Entrez votre clé dans la barre latérale.")
-
-    models_to_try = [model] + [m for m in (fallback_models or []) if m != model]
-
-    last_err = None
-    for m in models_to_try:
-        try:
-            return _call_single_model(prompt, m, max_tokens, temperature, active_key)
-        except RateLimitError:
-            last_err = m
-            continue  # try next model
-
-    tried = ", ".join(models_to_try)
-    raise ValueError(
-        f"Tous les modèles sont surchargés ({tried}).\n"
-        "Réessayez dans quelques minutes ou ajoutez des crédits sur openrouter.ai."
-    )
+    if provider == "opencode-go":
+        active_key = api_key or config.OPENCODE_GO_API_KEY
+        if not active_key:
+            raise ValueError("Clé OpenCode Go manquante. Obtenez votre clé sur opencode.ai/auth.")
+        models_to_try = [model] + [m for m in (fallback_models or []) if m != model]
+        last_err = None
+        for m in models_to_try:
+            try:
+                return _call_open_code_go(prompt, m, max_tokens, temperature, active_key)
+            except RateLimitError:
+                last_err = m
+                continue
+        tried = ", ".join(models_to_try)
+        raise ValueError(
+            f"Tous les modèles sont surchargés ({tried}). Réessayez dans quelques minutes."
+        )
+    else:
+        active_key = api_key or config.OPENROUTER_API_KEY
+        if not active_key:
+            raise ValueError("Clé OpenRouter manquante. Entrez votre clé dans la barre latérale.")
+        models_to_try = [model] + [m for m in (fallback_models or []) if m != model]
+        last_err = None
+        for m in models_to_try:
+            try:
+                return _call_single_model(prompt, m, max_tokens, temperature, active_key)
+            except RateLimitError:
+                last_err = m
+                continue
+        tried = ", ".join(models_to_try)
+        raise ValueError(
+            f"Tous les modèles sont surchargés ({tried}).\n"
+            "Réessayez dans quelques minutes ou ajoutez des crédits sur openrouter.ai."
+        )
 
 
 def analyze_chunk(
@@ -159,11 +259,12 @@ def analyze_chunk(
     api_key: str = None,
     output_language: str = "Français",
     fallback_models: list = None,
+    provider: str = "openrouter",
 ) -> str:
     if max_tokens is None:
         max_tokens = config.MAX_CHUNK_OUTPUT_TOKENS
     prompt = prepare_analyzer_prompt(transcript_chunk, video_title, output_language)
-    return call_llm(prompt, model, max_tokens, api_key=api_key, fallback_models=fallback_models)
+    return call_llm(prompt, model, max_tokens, api_key=api_key, fallback_models=fallback_models, provider=provider)
 
 def extract_title_from_analysis(analysis: str) -> str:
     """Extract video title from analysis if present."""

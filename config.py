@@ -26,6 +26,7 @@ def _get(key: str, default: str = "") -> str:
     return value
 
 OPENROUTER_API_KEY = _get("OPENROUTER_API_KEY")
+OPENCODE_GO_API_KEY = _get("OPENCODE_GO_API_KEY")
 OPENAI_API_KEY = _get("OPENAI_API_KEY")
 YOUTUBE_COOKIES = _get("YOUTUBE_COOKIES")  # Netscape cookies.txt content (optional)
 DEFAULT_MODEL = _get("DEFAULT_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
@@ -55,7 +56,35 @@ MODEL_CONTEXTS = {
     "openai/gpt-4o-mini": 128000,
 }
 
+OPENCODE_GO_MODELS = {
+    "deepseek-v4-pro": 1048576,
+    "deepseek-v4-flash": 1048576,
+    "kimi-k2.5": 131072,
+    "kimi-k2.6": 131072,
+    "glm-5": 131072,
+    "glm-5.1": 131072,
+    "mimo-v2.5": 131072,
+    "mimo-v2.5-pro": 131072,
+    "mimo-v2-pro": 131072,
+    "mimo-v2-omni": 131072,
+    "minimax-m2.5": 131072,
+    "minimax-m2.7": 131072,
+    "minimax-m3": 131072,
+    "qwen3.5-plus": 131072,
+    "qwen3.6-plus": 131072,
+    "qwen3.7-plus": 131072,
+    "qwen3.7-max": 131072,
+    "hy3-preview": 131072,
+}
+
+OPENCODE_GO_ANTHROPIC_MODELS = {"minimax-m2.5", "minimax-m2.7", "minimax-m3",
+                                 "qwen3.5-plus", "qwen3.6-plus", "qwen3.7-plus", "qwen3.7-max"}
+
+OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
+
 def get_model_context_limit(model: str) -> int:
+    if model in OPENCODE_GO_MODELS:
+        return OPENCODE_GO_MODELS[model]
     for key, limit in MODEL_CONTEXTS.items():
         if key in model:
             return limit

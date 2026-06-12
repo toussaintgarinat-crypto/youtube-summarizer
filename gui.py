@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
 from src import extractor, chunker, analyzer, fusion
-from src.models import fetch_free_models, fetch_all_models
+from src.models import fetch_free_models, fetch_all_models, fetch_open_code_go_models
 from src.image_generator import generate_image, get_providers_list, get_styles_list, build_image_prompt
 from src.excalidraw_generator import generate_diagram as generate_excalidraw
 from src.video_generator import generate_video, get_video_providers_list, build_video_prompt
@@ -65,6 +65,8 @@ class App:
         # Model cache (loaded in background)
         self._free_models: dict = {}
         self._all_models: dict  = {}
+        self._go_models: dict = {}
+        self.provider = "openrouter"
 
         self._build_ui()
         self._center()
@@ -80,6 +82,14 @@ class App:
         key_bar = ttk.Frame(root)
         key_bar.pack(fill=tk.X, **pad)
 
+        ttk.Label(key_bar, text="Provider :").pack(side=tk.LEFT)
+        self.provider_var = tk.StringVar(value="OpenRouter")
+        self._provider_combo = ttk.Combobox(key_bar, textvariable=self.provider_var,
+                                            width=13, state="readonly",
+                                            values=["OpenRouter", "OpenCode Go"])
+        self._provider_combo.pack(side=tk.LEFT, padx=4)
+        self._provider_combo.bind("<<ComboboxSelected>>", self._on_provider_change)
+
         ttk.Label(key_bar, text="Clé OpenRouter :").pack(side=tk.LEFT)
         self.api_key_var = tk.StringVar(value=config.OPENROUTER_API_KEY or "")
         self._key_entry = ttk.Entry(key_bar, textvariable=self.api_key_var,
@@ -91,6 +101,21 @@ class App:
         self._key_status.pack(side=tk.LEFT, padx=8)
         self.api_key_var.trace_add("write", lambda *_: self._refresh_key_status())
         self._refresh_key_status()
+
+        key_bar2 = ttk.Frame(root)
+        key_bar2.pack(fill=tk.X, **{"padx": 12, "pady": (0, 6)})
+        ttk.Label(key_bar2, text="Clé OpenCode Go :").pack(side=tk.LEFT)
+        self.go_key_var = tk.StringVar(value=config.OPENCODE_GO_API_KEY or "")
+        self._go_key_entry = ttk.Entry(key_bar2, textvariable=self.go_key_var,
+                                        width=40, show="*")
+        self._go_key_entry.pack(side=tk.LEFT, padx=6)
+        ttk.Button(key_bar2, text="👁", width=3,
+                   command=self._toggle_go_key).pack(side=tk.LEFT)
+        self._go_key_status = ttk.Label(key_bar2, text="")
+        self._go_key_status.pack(side=tk.LEFT, padx=4)
+        self.go_key_var.trace_add("write", lambda *_: self._refresh_go_key_status())
+        self._refresh_go_key_status()
+        self._go_key_bar = key_bar2  # reference for show/hide
 
         ttk.Label(key_bar, text="  Clé OpenAI (Whisper) :").pack(side=tk.LEFT)
         self.openai_key_var = tk.StringVar(value=config.OPENAI_API_KEY or "")
@@ -380,6 +405,36 @@ class App:
     def _active_key(self) -> str:
         return self.api_key_var.get().strip() or config.OPENROUTER_API_KEY
 
+    def _toggle_go_key(self):
+        show = "" if self._go_key_entry.cget("show") == "*" else "*"
+        self._go_key_entry.config(show=show)
+
+    def _refresh_go_key_status(self):
+        key = self.go_key_var.get().strip()
+        if key:
+            self._go_key_status.config(text="✅", foreground="green")
+        elif config.OPENCODE_GO_API_KEY:
+            self._go_key_status.config(text="ℹ️.env", foreground="blue")
+        else:
+            self._go_key_status.config(text="—", foreground="gray")
+
+    def _active_go_key(self) -> str:
+        return self.go_key_var.get().strip() or config.OPENCODE_GO_API_KEY
+
+    def _active_api_key(self) -> str:
+        return self._active_go_key() if self.provider == "opencode-go" else self._active_api_key()
+
+    def _on_provider_change(self, event=None):
+        sel = self.provider_var.get()
+        old = self.provider
+        self.provider = "opencode-go" if sel == "OpenCode Go" else "openrouter"
+        if self.provider != old:
+            self._refresh_model_list()
+            if self.provider == "opencode-go":
+                self._go_key_bar.pack(fill=tk.X, **{"padx": 12, "pady": (0, 6)})
+            else:
+                self._go_key_bar.pack_forget()
+
     def _output_language(self) -> str:
         return LANGUAGES.get(self.lang_var.get(), "Français")
 
@@ -392,23 +447,35 @@ class App:
     def _fetch_models(self):
         self._free_models = fetch_free_models()
         self._all_models  = fetch_all_models()
+        from src.models import fetch_open_code_go_models
+        self._go_models = fetch_open_code_go_models()
         self.root.after(0, self._refresh_model_list)
 
     def _refresh_model_list(self):
-        models = self._all_models if self.show_all_var.get() else self._free_models
-        if not models:
+        if self.provider == "opencode-go":
+            models = self._go_models
+            names = sorted(models.keys())
+        else:
+            models = self._all_models if self.show_all_var.get() else self._free_models
+            names = sorted(models.keys())
+
+        if not names:
             return
 
-        names = sorted(models.keys())
         self._model_combo.config(values=names)
 
         current = self.model_var.get()
         if current not in names:
-            # Pick best default: prefer llama-3.3-70b:free
-            preferred = "meta-llama/llama-3.3-70b-instruct:free"
+            if self.provider == "opencode-go":
+                preferred = "deepseek-v4-flash"
+            else:
+                preferred = "meta-llama/llama-3.3-70b-instruct:free"
             self.model_var.set(preferred if preferred in names else names[0])
 
-        tag = "" if self.show_all_var.get() else f"✅ {len(self._free_models)} gratuits"
+        if self.provider == "opencode-go":
+            tag = f"⚡ {len(self._go_models)} modèles Go"
+        else:
+            tag = "" if self.show_all_var.get() else f"✅ {len(self._free_models)} gratuits"
         self._model_info.config(text=tag)
         self._set_status("Prêt")
 
@@ -429,9 +496,10 @@ class App:
     def _check_ready(self) -> bool:
         if self.is_processing:
             return False
-        if not self._active_key():
+        if not self._active_api_key():
+            who = "OpenCode Go" if self.provider == "opencode-go" else "OpenRouter"
             messagebox.showerror("Clé manquante",
-                                 "Entrez votre clé OpenRouter en haut de la fenêtre.")
+                                 f"Entrez votre clé {who} en haut de la fenêtre.")
             return False
         return True
 
@@ -557,7 +625,7 @@ class App:
             w_lang       = self.whisper_lang_var.get()
             w_model      = self.whisper_model_var.get()
             lang_out     = self._output_language()
-            api_key      = self._active_key()
+            api_key      = self._active_api_key()
 
             transcript_data = None
 
@@ -606,7 +674,7 @@ class App:
             w_lang     = self.whisper_lang_var.get()
             w_model    = self.whisper_model_var.get()
             lang_out   = self._output_language()
-            api_key    = self._active_key()
+            api_key    = self._active_api_key()
 
             self._status(f"🎙️ Transcription de {self._local_filename}…")
             transcript_data = transcribe_local_file(
@@ -640,10 +708,13 @@ class App:
         question = self._qa_entry.get().strip()
         if not question or not self.current_transcript:
             return
-        api_key = self._active_key()
+        api_key = self._active_api_key()
         model = self.model_var.get()
-        free_models = list(self._free_models.keys())
-        fallbacks = [m for m in free_models if m != model]
+        if self.provider == "opencode-go":
+            fallbacks = []
+        else:
+            free_models = list(self._free_models.keys())
+            fallbacks = [m for m in free_models if m != model]
 
         prompt = (
             "Tu es un assistant spécialisé dans l'analyse de contenu vidéo.\n"
@@ -663,6 +734,7 @@ class App:
                 answer = analyzer.call_llm(
                     prompt, model=model, max_tokens=3000,
                     api_key=api_key, fallback_models=fallbacks,
+                    provider=self.provider,
                 )
                 self.root.after(0, self._show_qa_answer, question, answer)
             except Exception as e:
@@ -696,7 +768,7 @@ class App:
         if not self.current_result:
             messagebox.showwarning("Aucun résultat", "Analysez d'abord une vidéo.")
             return
-        api_key = self._active_key()
+        api_key = self._active_api_key()
 
         def _body():
             try:
@@ -766,7 +838,7 @@ class App:
             provider_id = "replicate-video"
 
         model = self._vid_model_var.get()
-        api_key = self._active_key()
+        api_key = self._active_api_key()
         rep_key = os.getenv("REPLICATE_API_KEY", "") or os.getenv("STABILITY_API_KEY", "")
         api_key = rep_key or api_key
 
@@ -813,7 +885,7 @@ class App:
         if not self.current_result:
             messagebox.showwarning("Aucun résultat", "Analysez d'abord une vidéo.")
             return
-        api_key = self._active_key()
+        api_key = self._active_api_key()
         provider_label = self._img_provider_var.get()
         providers = get_providers_list()
         provider_id = None
@@ -866,7 +938,7 @@ class App:
             w_lang     = self.whisper_lang_var.get()
             w_model    = self.whisper_model_var.get()
             lang_out   = self._output_language()
-            api_key    = self._active_key()
+            api_key    = self._active_api_key()
 
             if videos is None:
                 self._status("📋 Récupération des vidéos de la playlist...")
@@ -907,7 +979,7 @@ class App:
             w_lang     = self.whisper_lang_var.get()
             w_model    = self.whisper_model_var.get()
             lang_out   = self._output_language()
-            api_key    = self._active_key()
+            api_key    = self._active_api_key()
             max_videos = self.max_channel_var.get()
 
             if videos is None:
@@ -979,8 +1051,11 @@ class App:
     def _pipeline(self, transcript, title, model, chunk_size, overlap,
                   api_key, lang_out) -> str:
         # Build fallback list from free models (excluding the selected one)
-        free_models = list(self._free_models.keys())
-        fallbacks = [m for m in free_models if m != model]
+        if self.provider == "opencode-go":
+            fallbacks = []
+        else:
+            free_models = list(self._free_models.keys())
+            fallbacks = [m for m in free_models if m != model]
 
         self._status("✂️ Découpage en chunks…")
         chunks = chunker.chunk_transcript(transcript, max_tokens=chunk_size,
@@ -993,7 +1068,8 @@ class App:
             analyses.append(
                 analyzer.analyze_chunk(chunk["text"], title, model=model,
                                        api_key=api_key, output_language=lang_out,
-                                       fallback_models=fallbacks)
+                                       fallback_models=fallbacks,
+                                       provider=self.provider)
             )
             if len(chunks) > 1:
                 time.sleep(1)
@@ -1001,7 +1077,8 @@ class App:
         if len(analyses) > 1:
             self._status("🔗 Fusion des analyses…")
             return fusion.fusion_analyses(analyses, title, model, api_key=api_key,
-                                          output_language=lang_out, fallback_models=fallbacks)
+                                          output_language=lang_out, fallback_models=fallbacks,
+                                          provider=self.provider)
         return analyses[0]
 
     def _status(self, text: str):

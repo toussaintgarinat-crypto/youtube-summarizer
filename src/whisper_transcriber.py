@@ -272,21 +272,116 @@ def transcribe_with_local_whisper(
     ]
 
 
+def transcribe_with_openrouter_whisper(
+    audio_path: str, language: Optional[str] = None, api_key: Optional[str] = None
+) -> list:
+    """Transcribe using OpenRouter's Whisper API (uses your OpenRouter key)."""
+    import requests
+    api_key = api_key or getattr(config, "OPENROUTER_API_KEY", "")
+    if not api_key:
+        raise ValueError("OPENROUTER_API_KEY non configurée")
+
+    url = "https://openrouter.ai/api/v1/audio/transcriptions"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    model = "openai/whisper-1"
+
+    if os.path.getsize(audio_path) > WHISPER_API_MAX_BYTES:
+        return _transcribe_chunked_openrouter(audio_path, language, api_key, headers, model)
+
+    with open(audio_path, "rb") as f:
+        data = {"model": model, "response_format": "verbose_json",
+                "timestamp_granularities[]": "segment"}
+        files = {"file": (os.path.basename(audio_path), f, "audio/mpeg")}
+        if language:
+            data["language"] = language
+
+        resp = requests.post(url, headers=headers, data=data, files=files, timeout=300)
+        if resp.status_code != 200:
+            raise ValueError(f"OpenRouter Whisper {resp.status_code}: {resp.text[:200]}")
+        transcript = resp.json()
+
+    return [
+        {"text": seg["text"], "start": float(seg["start"]),
+         "duration": float(seg["end"]) - float(seg["start"])}
+        for seg in transcript.get("segments", [])
+    ]
+
+
+def _transcribe_chunked_openrouter(audio_path, language, api_key, base_headers, model) -> list:
+    import requests
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        all_segments = []
+        time_shift = 0.0
+        chunk_idx = 0
+        while True:
+            chunk_path = os.path.join(tmp_dir, f"chunk_{chunk_idx}.mp3")
+            if not _split_audio_chunk(audio_path, chunk_path,
+                                      float(chunk_idx * WHISPER_CHUNK_DURATION),
+                                      float(WHISPER_CHUNK_DURATION)):
+                break
+            if os.path.getsize(chunk_path) < 500:
+                break
+
+            url = "https://openrouter.ai/api/v1/audio/transcriptions"
+            with open(chunk_path, "rb") as f:
+                data = {"model": model, "response_format": "verbose_json",
+                        "timestamp_granularities[]": "segment"}
+                files = {"file": (f"chunk_{chunk_idx}.mp3", f, "audio/mpeg")}
+                if language:
+                    data["language"] = language
+                resp = requests.post(url, headers=base_headers, data=data, files=files, timeout=300)
+                if resp.status_code != 200:
+                    break
+                chunk_data = resp.json()
+
+            for seg in chunk_data.get("segments", []):
+                all_segments.append({
+                    "text": seg["text"],
+                    "start": float(seg["start"]) + time_shift,
+                    "duration": float(seg["end"]) - float(seg["start"]),
+                })
+            time_shift += WHISPER_CHUNK_DURATION
+            chunk_idx += 1
+        return all_segments
+    finally:
+        if os.path.isdir(tmp_dir):
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def transcribe_audio(
     audio_path: str, language: Optional[str] = None, model_size: str = "base",
     openai_api_key: Optional[str] = None,
 ) -> list:
     """
     Transcribe audio using best available method.
-    Priority: OpenAI Whisper API (if key available) → local Whisper model.
+    Priority: OpenAI API → OpenRouter API → local Whisper.
     """
+    # 1) OpenAI Whisper API
     effective_key = openai_api_key or getattr(config, "OPENAI_API_KEY", "")
-
     if effective_key:
         try:
             return transcribe_with_whisper_api(audio_path, language, api_key=effective_key)
         except Exception:
-            pass  # fall through to local whisper
+            pass
+
+    # 2) OpenRouter Whisper API (uses your existing OpenRouter key)
+    try:
+        return transcribe_with_openrouter_whisper(audio_path, language)
+    except Exception:
+        pass
+
+    # 3) Local whisper
+    try:
+        import whisper
+    except ImportError:
+        raise ValueError(
+            "Aucune méthode de transcription disponible.\n\n"
+            "Solutions :\n"
+            "1. Votre clé OpenRouter est dans .env → la transcription devrait fonctionner automatiquement.\n"
+            "2. Vérifiez que le fichier audio est valide.\n"
+            "3. Si le problème persiste, entrez une clé OpenAI dans le champ dédié."
+        )
 
     return transcribe_with_local_whisper(audio_path, model_size=model_size, language=language)
 

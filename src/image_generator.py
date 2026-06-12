@@ -419,12 +419,12 @@ Format de sortie (strict) :
 Idée ou prompt à transformer : {prompt}"""
 
 
-def enhance_image_prompt(user_prompt: str, api_key: str, model: str = None) -> dict:
+def enhance_image_prompt(user_prompt: str, api_key: str, model: str = None, provider: str = "openrouter") -> dict:
     """Enhance an image prompt using CTLT+ methodology via LLM."""
     from src.analyzer import call_llm
     try:
         full_prompt = CTLT_PROMPT.format(prompt=user_prompt)
-        result = call_llm(full_prompt, model=model or "meta-llama/llama-3.3-70b-instruct:free", max_tokens=1000, temperature=0.5, api_key=api_key)
+        result = call_llm(full_prompt, model=model or "meta-llama/llama-3.3-70b-instruct:free", max_tokens=1000, temperature=0.5, api_key=api_key, provider=provider)
         return {"success": True, "enhanced": result}
     except Exception as e:
         return {"success": False, "error": str(e)}

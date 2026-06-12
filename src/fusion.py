@@ -227,6 +227,7 @@ def fusion_analyses(
     api_key: str = None,
     output_language: str = "Français",
     fallback_models: list = None,
+    provider: str = "openrouter",
 ) -> str:
     """Fusionne plusieurs analyses en un rapport final.
 
@@ -281,6 +282,7 @@ def fusion_analyses(
                 api_key=api_key,
                 fallback_models=fallback_models,
                 temperature=0.7,
+                provider=provider,
             )
         except Exception:
             detailed_summary = merged_text

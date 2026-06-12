@@ -19,7 +19,7 @@ import streamlit as st
 import config
 from src import extractor, chunker, analyzer, fusion
 from src import tts_generator, local_llm, drive_exporter
-from src.models import fetch_free_models, fetch_all_models
+from src.models import fetch_free_models, fetch_all_models, fetch_open_code_go_models
 from src.image_generator import generate_image, get_providers_list, get_styles_list, build_image_prompt, enhance_image_prompt
 from src.excalidraw_generator import generate_diagram as generate_excalidraw
 from src import updater
@@ -140,6 +140,7 @@ def init_session_state():
         "generated_image_prompt": "",
         "excalidraw_json": "",
         "excalidraw_concepts": [],
+        "_last_url": "",
         # Video selection state
         "video_list": None,
         "video_list_title": "",
@@ -150,6 +151,7 @@ def init_session_state():
         "_result_queue": None,
         "_cancel_event": None,
         "_processing_source": "",
+        "llm_provider": "openrouter",
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -165,6 +167,19 @@ def active_api_key() -> str:
     except Exception:
         pass
     return config.OPENROUTER_API_KEY
+
+
+def active_go_api_key() -> str:
+    """Return the OpenCode Go key from session, env, or secrets."""
+    key = st.session_state.get("custom_go_api_key", "")
+    if key:
+        return key
+    return config.OPENCODE_GO_API_KEY
+
+
+def active_provider() -> str:
+    """Return the active LLM provider name."""
+    return st.session_state.get("llm_provider", "openrouter")
 
 
 def get_provider_api_key(provider_id: str) -> str:
@@ -190,6 +205,7 @@ def run_pipeline(
     use_local: bool = False,
     local_model: str = "llama3.2",
     fallbacks: list = None,
+    provider: str = "openrouter",
 ) -> str:
     """Chunk → Analyze → Fuse. Reports progress via on_progress(pct: int, msg: str)."""
     api_key = api_key or active_api_key()
@@ -225,6 +241,7 @@ def run_pipeline(
             analyses.append(analyzer.analyze_chunk(
                 chunk["text"], video_title, model=model, api_key=api_key,
                 output_language=output_language, fallback_models=fallbacks,
+                provider=provider,
             ))
         if len(chunks) > 1:
             time.sleep(1)
@@ -240,6 +257,7 @@ def run_pipeline(
             final_analysis = fusion.fusion_analyses(
                 analyses, video_title, model, api_key=api_key,
                 output_language=output_language, fallback_models=fallbacks,
+                provider=provider,
             )
 
     _progress(100, "✅ Terminé !")
@@ -271,6 +289,8 @@ def process_url(
     on_progress=None,
     cancel_event=None,
     api_key: str = "",
+    provider: str = "openrouter",
+    openai_api_key: str = "",
 ) -> tuple[str, str, list, str]:
     """Fetch transcript (or Whisper fallback) then run pipeline. Returns (result, title, warnings, transcript_text)."""
     warnings: list[str] = []
@@ -309,6 +329,7 @@ def process_url(
             language=whisper_lang if whisper_lang != "auto" else None,
             model_size=whisper_model,
             cookies_path=cookies_path,
+            openai_api_key=openai_api_key or None,
         )
 
     transcript = transcript_data["transcript"]
@@ -329,6 +350,7 @@ def process_url(
         on_progress=_pipeline_progress if on_progress else None,
         cancel_event=cancel_event,
         api_key=api_key,
+        provider=provider,
     )
     transcript_text = _transcript_to_text(transcript)
     return result, title, warnings, transcript_text
@@ -346,6 +368,8 @@ def process_local_file(
     on_progress=None,
     cancel_event=None,
     api_key: str = "",
+    provider: str = "openrouter",
+    openai_api_key: str = "",
 ) -> tuple[str, str, list, str]:
     """Transcribe local audio/video file then run pipeline. Returns (result, title, warnings, transcript_text)."""
     from src.whisper_transcriber import transcribe_local_file
@@ -366,6 +390,7 @@ def process_local_file(
         file_bytes, filename,
         language=whisper_lang if whisper_lang != "auto" else None,
         model_size=whisper_model,
+        openai_api_key=openai_api_key or None,
     )
 
     transcript = transcript_data["transcript"]
@@ -384,9 +409,11 @@ def process_local_file(
         on_progress=_pipeline_progress if on_progress else None,
         cancel_event=cancel_event,
         api_key=api_key,
+        provider=provider,
     )
     transcript_text = _transcript_to_text(transcript)
     return result, title, warnings, transcript_text
+
 
 
 def process_playlist(
@@ -403,6 +430,8 @@ def process_playlist(
     cancel_event=None,
     videos: list[dict] | None = None,
     api_key: str = "",
+    provider: str = "openrouter",
+    openai_api_key: str = "",
 ) -> tuple[str, str, list, str]:
     """Process all videos in a YouTube playlist. Returns combined result."""
     warnings: list[str] = []
@@ -457,6 +486,8 @@ def process_playlist(
                 on_progress=_video_progress,
                 cancel_event=cancel_event,
                 api_key=api_key,
+                provider=provider,
+                openai_api_key=openai_api_key,
             )
             all_results.append(f"## 📺 Vidéo {idx+1} : {title}\n\n{result}\n\n---\n")
             for warn in w:
@@ -486,6 +517,7 @@ def process_playlist(
             playlist_summary_prompt, model=model, max_tokens=2000,
             api_key=api_key,
             fallback_models=[],
+            provider=provider,
         )
         combined = f"# 📋 Rapport de la playlist : {playlist_title}\n\n"
         combined += f"**{total} vidéos analysées**\n\n"
@@ -514,6 +546,8 @@ def process_channel(
     videos: list[dict] | None = None,
     channel_name: str | None = None,
     api_key: str = "",
+    provider: str = "openrouter",
+    openai_api_key: str = "",
 ) -> tuple[str, str, list, str]:
     """Process all videos from a YouTube channel. Returns combined result."""
     warnings: list[str] = []
@@ -556,6 +590,8 @@ def process_channel(
                 on_progress=_video_progress,
                 cancel_event=cancel_event,
                 api_key=api_key,
+                provider=provider,
+                openai_api_key=openai_api_key,
             )
             all_results.append(f"## 📺 Vidéo {idx+1} : {title}\n\n{result}\n\n---\n")
             for warn in w:
@@ -586,6 +622,7 @@ def process_channel(
             channel_summary_prompt, model=model, max_tokens=2000,
             api_key=api_key,
             fallback_models=[],
+            provider=provider,
         )
         combined = f"# 📺 Rapport de la chaîne : {channel_name}\n\n"
         combined += f"**{total} vidéos analysées**\n\n"
@@ -675,10 +712,11 @@ Question : {question}"""
 
 def run_qa(question: str, transcript_text: str) -> str:
     """Answer a question about the video using the transcript as context."""
-    api_key = active_api_key()
+    prov = active_provider()
+    api_key = active_go_api_key() if prov == "opencode-go" else active_api_key()
     model = st.session_state.get("selected_model", config.DEFAULT_MODEL)
     free_models = list(_cached_free_models().keys())
-    fallbacks = [m for m in free_models if m != model]
+    fallbacks = [m for m in free_models if m != model] if prov == "openrouter" else []
 
     prompt = QA_PROMPT_TEMPLATE.format(transcript=transcript_text, question=question)
 
@@ -693,6 +731,7 @@ def run_qa(question: str, transcript_text: str) -> str:
     return analyzer.call_llm(
         prompt, model=model, max_tokens=3000,
         api_key=api_key, fallback_models=fallbacks,
+        provider=prov,
     )
 
 
@@ -748,7 +787,7 @@ def render_image_generation(result: str, title: str):
                 enhance_btn = st.button("🤖 Améliorer le prompt (CTLT+)", key="btn_enhance_prompt")
             if enhance_btn and custom_prompt.strip():
                 with st.spinner("🧠 Amélioration du prompt..."):
-                    enhanced = enhance_image_prompt(custom_prompt.strip(), active_api_key(), st.session_state.get("selected_model", ""))
+                    enhanced = enhance_image_prompt(custom_prompt.strip(), active_api_key(), image_llm_model, provider="openrouter")
                 if enhanced.get("success"):
                     st.session_state["img_custom_prompt"] = enhanced["enhanced"]
                     st.success("✅ Prompt amélioré !")
@@ -884,8 +923,8 @@ def render_excalidraw_generation(result: str, title: str):
                 selected = st.session_state.get("selected_model", "")
                 use_local = st.session_state.get("use_local_llm", False)
                 local_model = st.session_state.get("local_llm_model", "llama3.2")
-                diag = generate_excalidraw(result, title, api_key=active_api_key(), model=selected,
-                                            use_local=use_local, local_model=local_model)
+                diag = generate_excalidraw(result, title, api_key=active_api_key(), model=image_llm_model,
+                                            use_local=use_local, local_model=local_model, provider="openrouter")
 
                 if diag.get("success"):
                     st.session_state.excalidraw_json = diag["diagram_json"]
@@ -926,11 +965,11 @@ def show_result(result: str, title: str):
     st.markdown("---")
     st.markdown(f"## 📝 {title}")
 
-    col_md, col_pdf = st.columns(2)
+    col_md, col_pdf, col_obs = st.columns(3)
     with col_md:
         try:
             st.download_button(
-                label="💾 Télécharger Markdown",
+                label="💾 Markdown",
                 data=result or "",
                 file_name=_safe_filename(title, "analyse.md"),
                 mime="text/markdown",
@@ -943,7 +982,7 @@ def show_result(result: str, title: str):
             from src.pdf_exporter import export_to_pdf
             pdf_bytes = export_to_pdf(result or "", title or "export")
             st.download_button(
-                label="📄 Télécharger PDF",
+                label="📄 PDF",
                 data=pdf_bytes,
                 file_name=_safe_filename(title, "analyse.pdf"),
                 mime="application/pdf",
@@ -951,6 +990,22 @@ def show_result(result: str, title: str):
             )
         except Exception as e:
             st.caption(f"PDF non disponible : {e}")
+    with col_obs:
+        obs_vault = st.session_state.get("obsidian_vault_path", "").strip()
+        if obs_vault:
+            if st.button("📓 Obsidian", key="btn_export_obsidian", type="secondary",
+                         help="Exporter dans le vault Obsidian"):
+                from src.obsidian_exporter import export_to_obsidian
+                obs_sub = st.session_state.get("obsidian_subfolder", "YouTube").strip() or "YouTube"
+                obs_src = st.session_state.get("_last_url", "")
+                res = export_to_obsidian(result or "", title or "export", obs_vault,
+                                         source_url=obs_src, subfolder=obs_sub)
+                if res["success"]:
+                    st.success(f"✅ Exporté dans Obsidian : `{res['file_path']}`")
+                else:
+                    st.error(f"❌ {res['error']}")
+        else:
+            st.caption("📓 Configurer vault")
 
     # ── TTS & Drive export ────────────────────────────────────
     col_tts, col_drive = st.columns(2)
@@ -1064,7 +1119,7 @@ def render_video_selection(
     selected_model, chunk_size, overlap,
     force_whisper, whisper_lang, whisper_model_size,
     output_language, cookies_path, max_channel_videos,
-    key_in_use,
+    key_in_use, provider, whisper_openai_key,
 ):
     """Show checkboxes to select which videos to analyse."""
     if not key_in_use:
@@ -1118,6 +1173,8 @@ def render_video_selection(
                 cookies_path=cookies_path,
                 videos=selected_videos,
                 api_key=key_in_use,
+                provider=provider,
+                openai_api_key=whisper_openai_key,
             )
             if vtype == "channel":
                 kwargs["max_videos"] = max_channel_videos
@@ -1184,6 +1241,7 @@ def render_processing_ui():
                 st.session_state.analysis_result = result
                 st.session_state.current_title = title
                 st.session_state.current_transcript = transcript_text
+                st.session_state._last_url = st.session_state._processing_source
                 st.session_state.chat_history = []
                 st.session_state.generated_image_url = ""
                 st.session_state.excalidraw_json = ""
@@ -1228,6 +1286,11 @@ def main():
     _inject_pwa()
     init_session_state()
 
+    # ── Client-side key persistence ──
+    from src.key_store import inject_persistence_script, handle_loaded_keys, save_keys_to_localstorage, collect_provider_keys
+    inject_persistence_script()
+    handle_loaded_keys()
+
     if not check_password():
         return
 
@@ -1237,33 +1300,122 @@ def main():
     # ── Sidebar ──────────────────────────────────────────────
     st.sidebar.header("⚙️ Configuration")
 
-    st.sidebar.markdown("### 🔑 Clé API OpenRouter")
-    col_key, col_save = st.sidebar.columns([3, 1])
-    with col_key:
+    # ── LLM Provider selector ──
+    st.sidebar.markdown("### 🔌 Provider LLM")
+    provider_label = st.sidebar.selectbox(
+        "Fournisseur LLM",
+        options=["OpenRouter", "OpenCode Go"],
+        index=0,
+        key="llm_provider_label",
+        label_visibility="collapsed",
+    )
+    llm_provider = "opencode-go" if provider_label == "OpenCode Go" else "openrouter"
+    st.session_state["llm_provider"] = llm_provider
+
+    # ── Always show both key inputs ──
+    # OpenRouter key
+    st.sidebar.markdown("### 🔑 Clé OpenRouter")
+    col_or_key, col_or_save = st.sidebar.columns([3, 1])
+    with col_or_key:
         custom_key = st.text_input(
-            "Votre clé OpenRouter (optionnel)",
+            "OpenRouter key",
             type="password",
             placeholder="sk-or-v1-...",
             help="Laissez vide pour utiliser la clé par défaut. Obtenez une clé gratuite sur openrouter.ai",
             key="custom_api_key",
             label_visibility="collapsed",
         )
-    with col_save:
+    with col_or_save:
         st.write("")
-        if st.button("💾", key="save_openrouter", help="Sauvegarder dans .env (persiste après actualisation)"):
+        if st.button("💾", key="save_openrouter", help="Sauvegarder dans .env"):
             if custom_key:
                 _save_key_to_env("OPENROUTER_API_KEY", custom_key)
-                st.success("✅ Sauvegardée !", icon="💾")
+                st.success("✅", icon="💾")
             else:
-                st.error("Entrez une clé d'abord")
+                st.error("Entrez une clé")
 
-    key_in_use = custom_key or config.OPENROUTER_API_KEY
-    if custom_key:
-        st.sidebar.success("Votre clé personnelle est utilisée")
-    elif config.OPENROUTER_API_KEY:
-        st.sidebar.info("Clé par défaut utilisée")
+    # OpenCode Go key
+    st.sidebar.markdown("### 🔑 Clé OpenCode Go")
+    col_go_key, col_go_save = st.sidebar.columns([3, 1])
+    with col_go_key:
+        go_key = st.text_input(
+            "OpenCode Go key",
+            type="password",
+            placeholder="opencode-go-...",
+            help="Obtenez votre clé sur opencode.ai/auth (Go: $5/mois premier mois à $5).",
+            key="custom_go_api_key",
+            label_visibility="collapsed",
+        )
+    with col_go_save:
+        st.write("")
+        if st.button("💾", key="save_opencode_go", help="Sauvegarder dans .env"):
+            if go_key:
+                _save_key_to_env("OPENCODE_GO_API_KEY", go_key)
+                st.success("✅", icon="💾")
+            else:
+                st.error("Entrez une clé")
+
+    # ── Active key indicator ──
+    if llm_provider == "openrouter":
+        key_in_use = custom_key or config.OPENROUTER_API_KEY
+        if custom_key:
+            st.sidebar.success("✅ OpenRouter actif — votre clé personnelle")
+        elif config.OPENROUTER_API_KEY:
+            st.sidebar.info("ℹ️ OpenRouter actif — clé .env")
+        else:
+            st.sidebar.error("⚠️ Aucune clé OpenRouter")
     else:
-        st.sidebar.error("Aucune clé API — entrez la vôtre ci-dessus")
+        key_in_use = go_key or config.OPENCODE_GO_API_KEY
+        if go_key:
+            st.sidebar.success("✅ OpenCode Go actif — votre clé")
+        elif config.OPENCODE_GO_API_KEY:
+            st.sidebar.info("ℹ️ OpenCode Go actif — clé .env")
+        else:
+            st.sidebar.error("⚠️ Aucune clé OpenCode Go")
+
+    # ── Client-side key persistence ──
+    with st.sidebar.expander("💾 Persistance locale", expanded=False):
+        st.caption("Sauvegardez vos clés API sur cet appareil (navigateur). Elles seront restaurées automatiquement à chaque visite.")
+        from src.key_store import save_keys_to_localstorage, collect_provider_keys, export_keys_json, import_keys_from_json, apply_imported_keys
+        if st.button("💾 Sauvegarder sur cet appareil", key="btn_save_keys", help="Sauvegarder toutes les clés saisies dans le navigateur"):
+            keys = collect_provider_keys()
+            if keys:
+                save_keys_to_localstorage(keys)
+                st.success(f"✅ {len(keys)} clé(s) sauvegardée(s) sur cet appareil", icon="💾")
+            else:
+                st.warning("Aucune clé à sauvegarder")
+
+        st.markdown("---")
+        st.caption("Transférez vos clés entre appareils :")
+        col_e, col_i = st.columns(2)
+        with col_e:
+            keys_json = export_keys_json()
+            st.download_button(
+                "📤 Exporter",
+                data=keys_json,
+                file_name="youtube_summarizer_keys.json",
+                mime="application/json",
+                key="btn_export_keys",
+                help="Télécharge un fichier JSON avec vos clés. Gardez-le en lieu sûr.",
+            )
+        with col_i:
+            uploaded = st.file_uploader(
+                "📥 Importer",
+                type=["json"],
+                key="import_keys_file",
+                label_visibility="collapsed",
+            )
+            if uploaded:
+                try:
+                    imported = import_keys_from_json(uploaded.read().decode("utf-8"))
+                    if imported:
+                        apply_imported_keys(imported)
+                        st.success(f"✅ {len(imported)} clé(s) importée(s) et sauvegardée(s)", icon="📥")
+                        st.rerun()
+                    else:
+                        st.warning("Aucune clé valide dans le fichier")
+                except Exception as e:
+                    st.error(f"❌ Fichier invalide : {e}")
 
     with st.sidebar.expander("🔌 Providers images", expanded=False):
         st.caption("Clés API pour les providers d'image externes (optionnel). Laissez vide pour utiliser la clé OpenRouter.")
@@ -1313,21 +1465,26 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 🤖 Modèle")
 
-    show_all_models = st.sidebar.toggle("Afficher tous les modèles", value=False,
-                                        help="Par défaut seuls les modèles gratuits sont affichés.")
-
-    if show_all_models:
-        model_map = _cached_all_models()
-        st.sidebar.caption(f"{len(model_map)} modèles disponibles (gratuits + payants)")
+    if llm_provider == "opencode-go":
+        model_map = fetch_open_code_go_models()
+        available_models = sorted(model_map.keys())
+        st.sidebar.caption(f"⚡ {len(model_map)} modèles OpenCode Go disponibles")
+        default_model = "deepseek-v4-flash"
+        default_idx = available_models.index(default_model) if default_model in available_models else 0
     else:
-        model_map = _cached_free_models()
-        st.sidebar.caption(f"✅ {len(model_map)} modèles **gratuits** disponibles")
+        show_all_models = st.sidebar.toggle("Afficher tous les modèles", value=False,
+                                            help="Par défaut seuls les modèles gratuits sont affichés.")
+        if show_all_models:
+            model_map = _cached_all_models()
+            st.sidebar.caption(f"{len(model_map)} modèles disponibles (gratuits + payants)")
+        else:
+            model_map = _cached_free_models()
+            st.sidebar.caption(f"✅ {len(model_map)} modèles **gratuits** disponibles")
+        available_models = sorted(model_map.keys())
+        default_model = config.DEFAULT_MODEL
+        default_idx = available_models.index(default_model) if default_model in available_models else 0
 
-    available_models = sorted(model_map.keys())
-    default_model = config.DEFAULT_MODEL
-    default_idx = available_models.index(default_model) if default_model in available_models else 0
-
-    selected_model = st.sidebar.selectbox("Modèle LLM", options=available_models, index=default_idx)
+    selected_model = st.sidebar.selectbox("Modèle LLM texte", options=available_models, index=default_idx)
     st.session_state["selected_model"] = selected_model
 
     ctx_limit = model_map.get(selected_model, config.get_model_context_limit(selected_model))
@@ -1340,6 +1497,19 @@ def main():
         "Chevauchement (tokens)",
         min_value=100, max_value=chunk_size // 2,
         value=min(chunk_size // 10, config.CHUNK_OVERLAP_TOKENS), step=100,
+    )
+
+    # ── Image/Excalidraw LLM model (always uses OpenRouter) ──
+    image_models = _cached_free_models()
+    image_model_names = sorted(image_models.keys())
+    img_default = "meta-llama/llama-3.3-70b-instruct:free"
+    img_default_idx = image_model_names.index(img_default) if img_default in image_model_names else 0
+    image_llm_model = st.sidebar.selectbox(
+        "Modèle LLM image/excalidraw",
+        options=image_model_names,
+        index=img_default_idx,
+        key="image_llm_model",
+        help="Modèle OpenRouter utilisé pour générer les prompts d'image, diagrammes Excalidraw, etc.",
     )
 
     st.sidebar.markdown("---")
@@ -1399,6 +1569,17 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 🎙️ Whisper")
 
+    whisper_openai_key = st.sidebar.text_input(
+        "Clé OpenAI (Whisper API)",
+        type="password",
+        placeholder="sk-... (optionnel)",
+        help="Clé OpenAI pour utiliser l'API Whisper (plus rapide). Sans clé, utilise OpenRouter ou Whisper local.",
+        key="whisper_openai_key",
+        label_visibility="collapsed",
+    )
+    if whisper_openai_key:
+        st.sidebar.caption("✅ Clé OpenAI Whisper configurée")
+
     force_whisper = st.sidebar.checkbox(
         "Forcer Whisper",
         value=False,
@@ -1426,7 +1607,8 @@ def main():
     )
 
     free_tag = " 🆓" if selected_model.endswith(":free") else ""
-    st.sidebar.markdown(f"**Contexte :** {ctx_limit:,} tokens{free_tag}")
+    admin_tag = f" (OpenCode Go)" if llm_provider == "opencode-go" else ""
+    st.sidebar.markdown(f"**Contexte :** {ctx_limit:,} tokens{free_tag}{admin_tag}")
 
     st.sidebar.markdown("---")
     with st.sidebar.expander("☁️ Google Drive", expanded=False):
@@ -1465,6 +1647,29 @@ def main():
             st.caption("Créez un projet sur console.cloud.google.com, activez Drive API, "
                        "créez un OAuth 2.0 Client ID de type 'Web application' "
                        "avec redirect URI http://localhost:8501")
+
+    st.sidebar.markdown("---")
+    with st.sidebar.expander("📓 Obsidian", expanded=False):
+        st.caption("Exportez vos analyses directement dans votre vault Obsidian en Markdown.")
+        from src.obsidian_exporter import find_vaults
+        vaults = find_vaults()
+        if vaults:
+            vault_options = {v["name"]: v["path"] for v in vaults}
+            vault_options["— Chemin personnalisé —"] = ""
+            sel = st.selectbox("Vault détecté", options=list(vault_options.keys()), key="obsidian_vault_sel")
+            if sel != "— Chemin personnalisé —":
+                st.session_state.obsidian_vault_path = vault_options[sel]
+            else:
+                st.session_state.obsidian_vault_path = ""
+        else:
+            st.caption("Aucun vault détecté automatiquement.")
+        st.text_input("Chemin du vault", value=st.session_state.get("obsidian_vault_path", ""),
+                       placeholder="/Users/moi/Documents/Obsidian/MonVault",
+                       key="obsidian_vault_path", label_visibility="collapsed",
+                       help="Chemin absolu vers le dossier racine de votre vault Obsidian.")
+        st.text_input("Sous-dossier (optionnel)", value="YouTube", key="obsidian_subfolder",
+                       placeholder="YouTube", label_visibility="collapsed",
+                       help="Dossier dans le vault où sauvegarder les analyses.")
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 🔊 Synthèse vocale")
@@ -1546,7 +1751,7 @@ def main():
             selected_model, chunk_size, overlap,
             force_whisper, whisper_lang, whisper_model_size,
             output_language, cookies_path, max_channel_videos,
-            key_in_use,
+            key_in_use, llm_provider, whisper_openai_key,
         )
         return
 
@@ -1617,6 +1822,8 @@ def main():
                     need_whisper, whisper_lang, whisper_model_size,
                     output_language, cookies_path,
                     api_key=key_in_use,
+                    provider=llm_provider,
+                    openai_api_key=whisper_openai_key,
                 )
                 st.rerun()
 
@@ -1651,6 +1858,8 @@ def main():
                     whisper_lang, whisper_model_size,
                     output_language,
                     api_key=key_in_use,
+                    provider=llm_provider,
+                    openai_api_key=whisper_openai_key,
                 )
                 st.rerun()
 
