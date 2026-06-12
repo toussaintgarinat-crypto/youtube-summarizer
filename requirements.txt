@@ -5,6 +5,7 @@ streamlit
 requests
 fpdf2
 openai
+openai-whisper
 yt-dlp>=2026.3.17
 gtts
 google-auth-oauthlib
