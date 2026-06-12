@@ -462,7 +462,7 @@ def process_playlist(
                 capture_output=True, text=True, timeout=30,
             )
             if result.returncode == 0 and result.stdout.strip():
-                playlist_title = result.stdout.strip()
+                playlist_title = result.stdout.strip().split("\n")[0]
         except Exception:
             pass
 
